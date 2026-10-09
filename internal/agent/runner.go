@@ -8,6 +8,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent/sdk"
 )
 
@@ -57,9 +58,11 @@ type ReviewInput struct {
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
+// Text 优先使用 review_note 拼出的评论；模型没有记笔记时才回退到自由文本。
 type ReviewResult struct {
 	SessionID string
 	Text      string
+	Noted     bool
 }
 
 // Review 对一个 PR 做一轮只读审查。已有 SessionID 时在同一会话里续接。
@@ -85,11 +88,23 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 			return ReviewResult{}, err
 		}
 	}
+	if err := r.agent.SetSessionWorkingDir(sessionID, input.WorkDir); err != nil {
+		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
+	}
+	notes := &review.Notes{}
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
+		return ReviewResult{SessionID: sessionID}, err
+	}
 	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	return ReviewResult{SessionID: sessionID, Text: strings.TrimSpace(text)}, nil
+	result := ReviewResult{SessionID: sessionID, Text: strings.TrimSpace(text)}
+	if notes.Len() > 0 {
+		result.Text = notes.Render()
+		result.Noted = true
+	}
+	return result, nil
 }
 
 func prompt(input ReviewInput) string {
@@ -101,12 +116,16 @@ func prompt(input ReviewInput) string {
 	if input.Review.Comment != "" {
 		fmt.Fprintf(&b, "\n用户补充要求：\n%s\n", input.Review.Comment)
 	}
-	fmt.Fprintf(&b, "\n已准备的 diff：\n```\n%s\n```\n\n", input.Diff)
+	fmt.Fprintf(&b, "\n已准备的 diff，可能被截断：\n```\n%s\n```\n\n", input.Diff)
+	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")
+	b.WriteString("1. pr_diff_stat 看文件地图。truncated 为 true 时，用 pr_file_diff 按文件补读。\n")
+	b.WriteString("2. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
+	b.WriteString("3. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
+	b.WriteString("4. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」。\n\n")
 	b.WriteString("规则：\n")
-	b.WriteString("1. 所有 terminal 命令必须带 workdir，值就是上面的仓库绝对路径。\n")
-	b.WriteString("2. 读文件时使用仓库内的绝对路径。\n")
-	b.WriteString("3. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
-	b.WriteString("4. 最后直接输出要发到 PR 的评论正文，以【MojoReviewer】开头。分成「严重」「建议」两节，没有问题就写「无」。\n")
+	b.WriteString("1. 路径只能落在这次检出内。比较基线用 refs/review/base，不要运行 git diff main...HEAD。\n")
+	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
+	b.WriteString("3. 最终回复只写一句状态。评论正文由 review_note 汇总，不要在回复里再写一份。没有问题时不要调用 review_note。\n")
 	return b.String()
 }
 
@@ -115,5 +134,6 @@ const systemPrompt = `# SOUL
 你是 MojoReviewer，只负责审查 GitHub Pull Request。
 
 使用中文。只阅读代码和 diff，不修改仓库，不推送，不创建或合并 PR。
-终端命令必须显式使用调用方给出的绝对工作目录。
+优先使用 pr_diff_stat、pr_file_diff、read_repo_file、repo_grep、changed_symbols、tests_around、review_note。
+这些工具的范围限定在本次检出内。
 `

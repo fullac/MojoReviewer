@@ -32,13 +32,25 @@ func TestPrepareChecksOutHeadSHA(t *testing.T) {
 	head := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
 	run(t, seed, "git", "push", "origin", "HEAD:refs/heads/main")
 
-	ws, err := Prepare(root, "acme/web", origin, head, "acme/web#1")
+	ws, err := PrepareWithBase(root, "acme/web", origin, head, "acme/web#1", "main", base)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "HEAD"))
 	if got != head {
 		t.Fatalf("检出 %s，期望 %s", got, head)
+	}
+	baseRef := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "refs/review/base"))
+	if baseRef != base {
+		t.Fatalf("base ref 指向 %s，期望 %s", baseRef, base)
+	}
+	originBase := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "refs/remotes/origin/main"))
+	if originBase != base {
+		t.Fatalf("origin/main 指向 %s，期望 %s", originBase, base)
+	}
+	mergeBase := strings.TrimSpace(run(t, ws.Dir, "git", "merge-base", "refs/review/base", "HEAD"))
+	if mergeBase != base {
+		t.Fatalf("merge-base 为 %s，期望 %s", mergeBase, base)
 	}
 	diff, err := Diff(ws.Dir, base)
 	if err != nil {
@@ -59,4 +71,3 @@ func run(t *testing.T, dir, name string, args ...string) string {
 	}
 	return string(out)
 }
-

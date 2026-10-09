@@ -20,7 +20,7 @@ type Server struct {
 	runner  *agent.Runner
 	store   *store.Store
 	allowed map[string]bool
-	jobs chan github.Review
+	jobs    chan github.Review
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -104,7 +104,7 @@ func (s *Server) worker(ctx context.Context) {
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
 	log.Printf("开始审查 %s", item.SessionKey)
-	ws, err := review.Prepare(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey)
+	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		log.Printf("准备仓库失败 %s: %v", item.SessionKey, err)
 		return
@@ -114,7 +114,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		diffText, err = review.Diff(ws.Dir, item.BaseSHA)
 		if err != nil {
 			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
-			diffText = "（diff 读取失败：" + err.Error() + "。请在仓库绝对路径内用 file_read 查看。）"
+			diffText = "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
 		}
 	}
 	existing, _ := s.store.Get(item.SessionKey)
