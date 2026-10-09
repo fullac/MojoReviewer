@@ -1,0 +1,4 @@
+/bin/
+*.db
+.env
+.MojoReviewer/config.json
