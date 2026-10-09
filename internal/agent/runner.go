@@ -85,6 +85,9 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 			return ReviewResult{}, err
 		}
 	}
+	if err := r.agent.SetSessionWorkingDir(sessionID, input.WorkDir); err != nil {
+		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
+	}
 	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
@@ -106,7 +109,8 @@ func prompt(input ReviewInput) string {
 	b.WriteString("1. 所有 terminal 命令必须带 workdir，值就是上面的仓库绝对路径。\n")
 	b.WriteString("2. 读文件时使用仓库内的绝对路径。\n")
 	b.WriteString("3. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
-	b.WriteString("4. 最后直接输出要发到 PR 的评论正文，以【MojoReviewer】开头。分成「严重」「建议」两节，没有问题就写「无」。\n")
+	b.WriteString("4. 工作区是 detached checkout，可能是 shallow。禁止运行 git diff main...HEAD 或任何假定本地存在 base 分支的 <base-branch>...HEAD；需要比较时使用已准备的 refs/review/base，或直接使用上面的 diff。\n")
+	b.WriteString("5. 最后直接输出要发到 PR 的评论正文，以【MojoReviewer】开头。分成「严重」「建议」两节，没有问题就写「无」。\n")
 	return b.String()
 }
 
