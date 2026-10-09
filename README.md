@@ -2,7 +2,7 @@
 
 用 LuckyAgent 公开 SDK 做 GitHub Pull Request 只读审查。
 
-它接收 GitHub webhook，把 PR 克隆到本机，再把仓库绝对路径和 diff 交给进程内的 LuckyAgent。模型只能读仓库、跑带 `workdir` 的终端命令。服务再用 `gh` 把结论文字发回 PR。它不修改文件，不提交，不推送，不创建或合并 PR。
+它接收 GitHub webhook，把 PR 克隆到本机，再把仓库路径、截断后的 diff 和一组检出内只读工具交给进程内的 LuckyAgent。服务再用 `gh` 把结论文字发回 PR。它不修改文件，不提交，不推送，不创建或合并 PR。
 
 ## 运行
 
@@ -18,4 +18,4 @@ go run ./cmd/mojoreviewer
 
 ## 限制
 
-LuckyAgent 公开 SDK 不能给会话设置工作目录，也不能按单次任务换模型。所以每个命令都要在提示词里写绝对路径，整个进程只用配置里的一组 `agent.provider` 和 `agent.model`。
+整个进程只用配置里的一组 `agent.provider` 和 `agent.model`，不能按单次任务换模型。审查前会把会话工作目录设到这次检出。模型另外还有一组只在检出内可用的工具：`pr_diff_stat`、`pr_file_diff`、`read_repo_file`、`repo_grep`、`changed_symbols`、`tests_around`、`review_note`。比较基线是 `refs/review/base`。
