@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -14,10 +15,14 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
+type reviewRunner interface {
+	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
+}
+
 // Server 接收 GitHub webhook，串行跑只读审查。
 type Server struct {
 	cfg     config.Config
-	runner  *agent.Runner
+	runner  reviewRunner
 	store   *store.Store
 	allowed map[string]bool
 	jobs    chan github.Review
@@ -104,9 +109,17 @@ func (s *Server) worker(ctx context.Context) {
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
 	log.Printf("开始审查 %s", item.SessionKey)
+	if item.Comment != "" {
+		resolved, err := github.ResolveComment(ctx, item)
+		if err != nil {
+			s.postFailure(item, "补齐 PR 信息失败", err)
+			return
+		}
+		item = resolved
+	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
-		log.Printf("准备仓库失败 %s: %v", item.SessionKey, err)
+		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
 	diffText := "（评论触发，沿用会话中的仓库上下文。请在仓库绝对路径内自行查看 diff。）"
@@ -136,4 +149,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		return
 	}
 	log.Printf("审查完成 %s", item.SessionKey)
+}
+
+func (s *Server) postFailure(item github.Review, stage string, err error) {
+	log.Printf("%s %s: %v", stage, item.SessionKey, err)
+	if postErr := review.PostComment(item.Repo, item.Number, fmt.Sprintf("%s：%v", stage, err)); postErr != nil {
+		log.Printf("发布失败评论失败 %s: %v", item.SessionKey, postErr)
+	}
 }
