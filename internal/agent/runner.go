@@ -123,7 +123,7 @@ func prompt(input ReviewInput) string {
 	b.WriteString("3. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
 	b.WriteString("4. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」。\n\n")
 	b.WriteString("规则：\n")
-	b.WriteString("1. 路径只能落在这次检出内。比较基线用 refs/review/base，不要运行 git diff main...HEAD。\n")
+	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。比较基线用 refs/review/base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
 	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
 	b.WriteString("3. 最终回复只写一句状态。评论正文由 review_note 汇总，不要在回复里再写一份。没有问题时不要调用 review_note。\n")
 	return b.String()

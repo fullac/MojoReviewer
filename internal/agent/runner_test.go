@@ -13,7 +13,19 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		WorkDir: "/tmp/review",
 		Diff:    "diff",
 	})
-	for _, want := range []string{"pr_diff_stat", "pr_file_diff", "read_repo_file", "repo_grep", "changed_symbols", "review_note", "tests_around", "refs/review/base", "git diff main...HEAD"} {
+	for _, want := range []string{
+		"pr_diff_stat",
+		"pr_file_diff",
+		"read_repo_file",
+		"repo_grep",
+		"changed_symbols",
+		"review_note",
+		"tests_around",
+		"detached checkout",
+		"shallow",
+		"refs/review/base",
+		"git diff main...HEAD",
+	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("提示缺少 %q:\n%s", want, got)
 		}
