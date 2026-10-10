@@ -39,7 +39,7 @@ func fakeGH(t *testing.T, response, failure string) string {
 func TestResolveCommentRefreshesPullRequest(t *testing.T) {
 	argsPath := fakeGH(t, pullRequestJSON, "")
 	item := Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7", Comment: "@mojo 再看一下", HeadSHA: "old-head"}
-	got, err := ResolveComment(context.Background(), item)
+	got, err := ResolveComment(context.Background(), item, "github.com")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestResolveCommentRejectsUnusableResponse(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fakeGH(t, tt.response, tt.failure)
-			_, err := ResolveComment(context.Background(), Review{Repo: "acme/web", Number: 7})
+			_, err := ResolveComment(context.Background(), Review{Repo: "acme/web", Number: 7}, "github.com")
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("期望错误 %q，得到 %v", tt.want, err)
 			}
@@ -89,10 +89,40 @@ func TestResolveCommentHonorsCancellation(t *testing.T) {
 	argsPath := fakeGH(t, pullRequestJSON, "")
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := ResolveComment(ctx, Review{Repo: "acme/web", Number: 7}); err == nil {
+	if _, err := ResolveComment(ctx, Review{Repo: "acme/web", Number: 7}, "github.com"); err == nil {
 		t.Fatal("取消后的任务仍查询了 PR")
 	}
 	if _, err := os.Stat(argsPath); !os.IsNotExist(err) {
 		t.Fatalf("取消后仍启动了 gh: %v", err)
+	}
+}
+
+func TestResolveCommentUsesConfiguredHost(t *testing.T) {
+	argsPath := fakeGH(t, pullRequestJSON, "")
+	_, err := ResolveComment(context.Background(), Review{Repo: "acme/web", Number: 7}, "ghe.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(args) != "api\n--hostname\nghe.example.com\nrepos/acme/web/pulls/7\n" {
+		t.Fatalf("没有使用配置的主机: %s", args)
+	}
+}
+
+func TestResolveCommentOmitsHostnameWhenUnset(t *testing.T) {
+	argsPath := fakeGH(t, pullRequestJSON, "")
+	_, err := ResolveComment(context.Background(), Review{Repo: "acme/web", Number: 7}, "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(args) != "api\nrepos/acme/web/pulls/7\n" {
+		t.Fatalf("空主机仍写死了 hostname: %s", args)
 	}
 }
