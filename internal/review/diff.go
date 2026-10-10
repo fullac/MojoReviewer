@@ -13,10 +13,12 @@ func Diff(dir, baseSHA string) (string, error) {
 	if strings.TrimSpace(baseSHA) == "" {
 		return "", fmt.Errorf("缺少 base SHA")
 	}
-	if err := git(dir, "fetch", "--depth", "1", "origin", baseSHA); err != nil {
+	// Keep the base history reachable so a later merge-base or triple-dot
+	// comparison cannot be defeated by a shallow boundary at baseSHA.
+	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", baseSHA+":"+baseRef); err != nil {
 		return "", err
 	}
-	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", baseSHA, "HEAD")
+	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", baseRef, "HEAD")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {

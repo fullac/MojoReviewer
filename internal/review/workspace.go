@@ -16,6 +16,16 @@ type Workspace struct {
 // Prepare 把 PR head 克隆到 dataDir/workspaces 下的稳定目录。
 // 目录已存在时只 fetch 指定 SHA，不切换到别的仓库。
 func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace, error) {
+	return prepare(dataDir, repo, cloneURL, sha, sessionKey, "", "")
+}
+
+// PrepareWithBase 准备 PR head，并把 PR base 固定到 refs/review/base。
+// base 的完整历史也会被抓取，确保审查命令可以计算 merge-base。
+func PrepareWithBase(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
+	return prepare(dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA)
+}
+
+func prepare(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(sha) == "" {
 		return Workspace{}, fmt.Errorf("仓库或提交为空")
 	}
@@ -26,6 +36,9 @@ func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace,
 			return Workspace{}, err
 		}
 		if err := git(dir, "checkout", "--detach", "FETCH_HEAD"); err != nil {
+			return Workspace{}, err
+		}
+		if err := prepareBase(dir, sha, baseBranch, baseSHA); err != nil {
 			return Workspace{}, err
 		}
 		return Workspace{Dir: dir}, nil
@@ -50,7 +63,37 @@ func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace,
 	if err := git(dir, "checkout", "--detach", "FETCH_HEAD"); err != nil {
 		return Workspace{}, err
 	}
+	if err := prepareBase(dir, sha, baseBranch, baseSHA); err != nil {
+		return Workspace{}, err
+	}
 	return Workspace{Dir: dir}, nil
+}
+
+const baseRef = "refs/review/base"
+
+// prepareBase creates a stable base ref and makes the head/base histories
+// available. A depth-1 fetch of two commits is insufficient for merge-base:
+// both commits become shallow boundaries with no common ancestry.
+func prepareBase(dir, headSHA, baseBranch, baseSHA string) error {
+	if strings.TrimSpace(baseSHA) == "" {
+		return nil
+	}
+	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", baseSHA+":"+baseRef); err != nil {
+		return err
+	}
+	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", headSHA); err != nil {
+		return err
+	}
+	if strings.TrimSpace(baseBranch) != "" {
+		branchRef := "refs/remotes/origin/" + baseBranch
+		if err := git(dir, "check-ref-format", branchRef); err != nil {
+			return fmt.Errorf("base 分支无效: %w", err)
+		}
+		if err := git(dir, "update-ref", branchRef, baseSHA); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func git(dir string, args ...string) error {

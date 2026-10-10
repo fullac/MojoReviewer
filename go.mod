@@ -58,4 +58,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace github.com/yurika0211/luckyagent => ../lucky-agent
+replace github.com/yurika0211/luckyagent => ../luckyagent
