@@ -114,7 +114,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		diffText, err = review.Diff(ws.Dir, item.BaseSHA)
 		if err != nil {
 			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
-			diffText = "（diff 读取失败：" + err.Error() + "。请在仓库绝对路径内用 file_read 查看。）"
+			diffText = "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
 		}
 	}
 	existing, _ := s.store.Get(item.SessionKey)
