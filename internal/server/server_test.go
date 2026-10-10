@@ -43,7 +43,10 @@ case "$1" in
     if [ -s "$MOJO_TEST_FAILURE" ]; then cat "$MOJO_TEST_FAILURE" >&2; exit 1; fi
     cat "$MOJO_TEST_RESPONSE"
     ;;
-  pr) printf '%s\n' "$@" >> "$MOJO_TEST_COMMENT" ;;
+  pr)
+    printf 'GH_HOST=%s\n' "$GH_HOST" >> "$MOJO_TEST_COMMENT"
+    printf '%s\n' "$@" >> "$MOJO_TEST_COMMENT"
+    ;;
   *) exit 2 ;;
 esac
 `,
@@ -132,6 +135,7 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	s, runner, apiPath, commentPath := testServer(t, string(payload), "")
+	s.cfg.GitHub.Host = "ghe.example.com"
 	if err := s.store.Put("acme/web#7", store.Record{Repo: "acme/web", Number: 7, HeadSHA: "old-head", SessionID: "existing-session"}); err != nil {
 		t.Fatal(err)
 	}
@@ -154,8 +158,8 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("审查记录未更新: %+v", rec)
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "pr\ncomment\n7\n--repo\nacme/web\n--body\n【MojoReviewer】\n\n审查完成") {
-		t.Fatalf("没有发布审查结果: %s %v", comment, err)
+	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MojoReviewer】\n\n审查完成") {
+		t.Fatalf("没有把审查结果发到配置的主机: %s %v", comment, err)
 	}
 	// 自动 PR 事件已有完整元数据，无需额外查询 GitHub。
 	if err := os.Remove(apiPath); err != nil {
@@ -180,6 +184,7 @@ func TestCommentReviewReportsSetupFailure(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, runner, _, commentPath := testServer(t, tt.response, tt.failure)
+			s.cfg.GitHub.Host = "ghe.example.com"
 			s.runOne(context.Background(), queueComment(t, s))
 			if len(runner.inputs) != 0 {
 				t.Fatal("准备失败后不应调用模型")
@@ -188,8 +193,8 @@ func TestCommentReviewReportsSetupFailure(t *testing.T) {
 				t.Fatal("准备失败不应写入已审查记录")
 			}
 			comment, err := os.ReadFile(commentPath)
-			if err != nil || !strings.Contains(string(comment), github.BotPrefix) || !strings.Contains(string(comment), tt.want) {
-				t.Fatalf("失败原因未回报到 PR: %s %v", comment, err)
+			if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\n") || !strings.Contains(string(comment), github.BotPrefix) || !strings.Contains(string(comment), tt.want) {
+				t.Fatalf("失败原因未回报到配置的主机: %s %v", comment, err)
 			}
 			body := string(comment)
 			for _, leak := range []string{"ghp_secret", "/nonexistent-mojo-test-repo", "HTTP 403", "file://"} {
@@ -206,7 +211,10 @@ func TestPublicFailureRedactsOperationalDetail(t *testing.T) {
 		err  string
 		want string
 	}{
+		{"获取 PR 信息失败: exit status 1: HTTP 403 forbidden token=ghp_secret", "访问 GitHub 被拒绝，请检查令牌权限"},
 		{"获取 PR 信息失败: exit status 1: authentication failed for https://ghe.internal/acme/web.git token=ghp_secret", "访问 GitHub 被拒绝，请检查令牌权限"},
+		{"git clone 失败: status 404: repository not found", "找不到 PR 或仓库"},
+		{"git clone 失败: exit status 128: port 40122 sha 4031aabb", "内部错误，详情见服务日志"},
 		{"git clone 失败: exit status 128: fatal: unable to access 'https://ghe.internal/acme/web.git': connection refused", "无法连接 GitHub"},
 		{"获取 PR 信息失败: context deadline exceeded", "访问 GitHub 超时"},
 		{"PR 信息与请求的仓库或编号不一致", "PR 信息与请求的仓库或编号不一致"},

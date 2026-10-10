@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -155,12 +156,14 @@ func normalize(file fileConfig) (Config, error) {
 
 // githubHost 只接受主机名。带协议、路径、端口或空白的值都视为无效并忽略，
 // 让 gh 继续使用它已经配置好的主机，而不是把错误主机写进请求。
+// 写了但无法使用的值会打警告，避免配置错误被静默吞掉。
 func githubHost(value string) string {
-	value = strings.TrimSpace(value)
-	if value == "" || strings.ContainsAny(value, " \t/\\:@") {
-		return ""
+	raw := strings.TrimSpace(value)
+	if raw == "" || !strings.ContainsAny(raw, " \t/\\:@") {
+		return raw
 	}
-	return value
+	log.Printf("github.host %q 不是主机名，已忽略，将沿用 gh 的默认主机", raw)
+	return ""
 }
 
 func fallback(value, def string) string {

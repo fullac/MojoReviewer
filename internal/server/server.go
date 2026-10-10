@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -144,7 +145,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		log.Printf("审查失败 %s: %v", item.SessionKey, err)
 		return
 	}
-	if err := review.PostComment(item.Repo, item.Number, result.Text); err != nil {
+	if err := review.PostComment(item.Repo, item.Number, result.Text, s.cfg.GitHub.Host); err != nil {
 		log.Printf("发布评论失败 %s: %v", item.SessionKey, err)
 		return
 	}
@@ -153,17 +154,22 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 
 func (s *Server) postFailure(item github.Review, stage string, err error) {
 	log.Printf("%s %s: %v", stage, item.SessionKey, err)
-	if postErr := review.PostComment(item.Repo, item.Number, stage+"："+publicFailure(err)); postErr != nil {
+	if postErr := review.PostComment(item.Repo, item.Number, stage+"："+publicFailure(err), s.cfg.GitHub.Host); postErr != nil {
 		log.Printf("发布失败评论失败 %s: %v", item.SessionKey, postErr)
 	}
 }
 
 // publicFailure 只给协作者一个归类后的原因。
 // gh/git 的 stderr 可能带本地路径、内部主机或令牌片段，那些只留在日志里。
+var (
+	httpDenied  = regexp.MustCompile(`(?i)(?:\bhttp\b|\bstatus\b|\bcode\b)[\s:=_-]*(?:401|403)\b`)
+	httpMissing = regexp.MustCompile(`(?i)(?:\bhttp\b|\bstatus\b|\bcode\b)[\s:=_-]*404\b`)
+)
+
 func publicFailure(err error) string {
 	text := strings.ToLower(err.Error())
 	switch {
-	case strings.Contains(text, "authentication") || strings.Contains(text, "unauthorized") || strings.Contains(text, "forbidden") || strings.Contains(text, "bad credentials") || strings.Contains(text, "401") || strings.Contains(text, "403"):
+	case strings.Contains(text, "authentication") || strings.Contains(text, "unauthorized") || strings.Contains(text, "forbidden") || strings.Contains(text, "bad credentials") || httpDenied.MatchString(text):
 		return "访问 GitHub 被拒绝，请检查令牌权限"
 	case strings.Contains(text, "timed out") || strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded") || strings.Contains(text, "context canceled"):
 		return "访问 GitHub 超时"
@@ -175,7 +181,7 @@ func publicFailure(err error) string {
 		return "PR 信息缺少检出所需字段"
 	case strings.Contains(text, "解析"):
 		return "PR 信息无法解析"
-	case strings.Contains(text, "not found") || strings.Contains(text, "404") || strings.Contains(text, "does not exist") || strings.Contains(text, "repository not found"):
+	case strings.Contains(text, "not found") || strings.Contains(text, "does not exist") || strings.Contains(text, "repository not found") || httpMissing.MatchString(text):
 		return "找不到 PR 或仓库"
 	default:
 		return "内部错误，详情见服务日志"
