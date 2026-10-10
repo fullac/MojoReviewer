@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -173,9 +174,9 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 
 func TestCommentReviewReportsSetupFailure(t *testing.T) {
 	for _, tt := range []struct{ name, response, failure, want string }{
-		{"API error", "", "HTTP 403: forbidden", "补齐 PR 信息失败：获取 PR 信息失败"},
-		{"incomplete response", `{"number":7,"base":{"repo":{"full_name":"acme/web"}}}`, "", "PR 信息缺少"},
-		{"clone error", `{"number":7,"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///nonexistent-mojo-test-repo"}},"head":{"sha":"head"}}`, "", "准备仓库失败"},
+		{"API error", "", "HTTP 403: forbidden token=ghp_secret", "补齐 PR 信息失败：访问 GitHub 被拒绝，请检查令牌权限"},
+		{"incomplete response", `{"number":7,"base":{"repo":{"full_name":"acme/web"}}}`, "", "PR 信息缺少检出所需字段"},
+		{"clone error", `{"number":7,"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///nonexistent-mojo-test-repo"}},"head":{"sha":"head"}}`, "", "准备仓库失败：内部错误，详情见服务日志"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			s, runner, _, commentPath := testServer(t, tt.response, tt.failure)
@@ -190,6 +191,37 @@ func TestCommentReviewReportsSetupFailure(t *testing.T) {
 			if err != nil || !strings.Contains(string(comment), github.BotPrefix) || !strings.Contains(string(comment), tt.want) {
 				t.Fatalf("失败原因未回报到 PR: %s %v", comment, err)
 			}
+			body := string(comment)
+			for _, leak := range []string{"ghp_secret", "/nonexistent-mojo-test-repo", "HTTP 403", "file://"} {
+				if strings.Contains(body, leak) {
+					t.Fatalf("公开评论泄露了内部细节 %q: %s", leak, body)
+				}
+			}
 		})
+	}
+}
+
+func TestPublicFailureRedactsOperationalDetail(t *testing.T) {
+	cases := []struct {
+		err  string
+		want string
+	}{
+		{"获取 PR 信息失败: exit status 1: authentication failed for https://ghe.internal/acme/web.git token=ghp_secret", "访问 GitHub 被拒绝，请检查令牌权限"},
+		{"git clone 失败: exit status 128: fatal: unable to access 'https://ghe.internal/acme/web.git': connection refused", "无法连接 GitHub"},
+		{"获取 PR 信息失败: context deadline exceeded", "访问 GitHub 超时"},
+		{"PR 信息与请求的仓库或编号不一致", "PR 信息与请求的仓库或编号不一致"},
+		{"PR 信息缺少 head SHA、base SHA/ref 或 clone URL", "PR 信息缺少检出所需字段"},
+		{"解析 PR 信息失败: invalid character", "PR 信息无法解析"},
+		{"git clone 失败: repository not found: /home/shiokou/.mojoreviewer/workspaces/acme", "找不到 PR 或仓库"},
+		{"git clone 失败: exit status 128: /home/shiokou/.mojoreviewer/workspaces/acme: permission denied", "内部错误，详情见服务日志"},
+	}
+	for _, tt := range cases {
+		got := publicFailure(errors.New(tt.err))
+		if got != tt.want {
+			t.Fatalf("publicFailure(%q) = %q, want %q", tt.err, got, tt.want)
+		}
+		if strings.Contains(got, "ghp_") || strings.Contains(got, "/home/") || strings.Contains(got, "ghe.internal") {
+			t.Fatalf("归类结果仍含内部细节: %q", got)
+		}
 	}
 }

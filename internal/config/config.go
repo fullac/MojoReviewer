@@ -41,7 +41,10 @@ func (s ServerConfig) Addr() string {
 }
 
 // GitHubConfig 是 webhook、访问令牌和仓库范围。
+// Host 是 gh 访问的 GitHub 主机名。空值表示沿用 gh 自己的认证上下文，
+// 这样 GitHub Enterprise Server 或非 github.com 的默认主机都能工作。
 type GitHubConfig struct {
+	Host          string
 	WebhookSecret string
 	Token         string
 	Repos         []string
@@ -66,6 +69,7 @@ type fileConfig struct {
 		Port int    `json:"port"`
 	} `json:"server"`
 	GitHub struct {
+		Host          string   `json:"host"`
 		WebhookSecret string   `json:"webhook_secret"`
 		Token         string   `json:"token"`
 		Repos         []string `json:"repos"`
@@ -122,6 +126,7 @@ func normalize(file fileConfig) (Config, error) {
 			Port: file.Server.Port,
 		},
 		GitHub: GitHubConfig{
+			Host:          githubHost(file.GitHub.Host),
 			WebhookSecret: strings.TrimSpace(file.GitHub.WebhookSecret),
 			Token:         strings.TrimSpace(file.GitHub.Token),
 			Repos:         compact(file.GitHub.Repos),
@@ -146,6 +151,16 @@ func normalize(file fileConfig) (Config, error) {
 		return Config{}, fmt.Errorf("%s 缺少 github.webhook_secret", ConfigPath)
 	}
 	return cfg, nil
+}
+
+// githubHost 只接受主机名。带协议、路径、端口或空白的值都视为无效并忽略，
+// 让 gh 继续使用它已经配置好的主机，而不是把错误主机写进请求。
+func githubHost(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, " \t/\\:@") {
+		return ""
+	}
+	return value
 }
 
 func fallback(value, def string) string {
