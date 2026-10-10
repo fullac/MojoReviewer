@@ -9,7 +9,8 @@ import (
 )
 
 // PostComment 用 gh 把审查评论发到 PR。评论固定带 BotPrefix，且不包含命令输出原文以外的调用方内容。
-func PostComment(repo string, number int, body string) error {
+// host 非空时写入 GH_HOST，和 ResolveComment 使用同一个 GitHub 主机。
+func PostComment(repo string, number int, body, host string) error {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return fmt.Errorf("评论为空")
@@ -18,7 +19,7 @@ func PostComment(repo string, number int, body string) error {
 		body = BotPrefix + "\n\n" + body
 	}
 	cmd := exec.Command("gh", "pr", "comment", fmt.Sprint(number), "--repo", repo, "--body", body)
-	cmd.Env = os.Environ()
+	cmd.Env = append(os.Environ(), "GH_HOST="+strings.TrimSpace(host))
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {

@@ -11,7 +11,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次。带 @触发用户 的评论可以再审，并续用已有会话。
 - 自己发出的评论以 `【MojoReviewer】` 开头。解析 webhook 时要跳过，避免自己触发自己。
-- `github.host` 为空时，`gh api` 不传 `--hostname`。不要再把主机写死成 `github.com`。
+- `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
 - 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
 - 有 `review_note` 时，发出去的正文用笔记拼。不要改回直接发模型自由文本。
 

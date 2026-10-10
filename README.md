@@ -6,7 +6,7 @@
 
 ## 运行
 
-配置写在项目里的 `.MojoReviewer/config.json`。先填 `agent.api_key` 和 `github.webhook_secret`。`github.host` 可选，填 GitHub Enterprise 的主机名；留空则沿用 `gh` 已配置的主机。`github.token` 用来克隆私有仓库和发布评论。`github.repos` 为空时接受所有仓库。`github.trigger_user` 填了之后，评论里 @ 这个名字会再审一次。
+配置写在项目里的 `.MojoReviewer/config.json`。先填 `agent.api_key` 和 `github.webhook_secret`。`github.host` 可选，填 GitHub Enterprise 的主机名。补齐 PR 信息和发布评论都会用它；留空则沿用 `gh` 已配置的主机。`github.token` 用来克隆私有仓库和发布评论。`github.repos` 为空时接受所有仓库。`github.trigger_user` 填了之后，评论里 @ 这个名字会再审一次。
 
 ```bash
 go run ./cmd/mojoreviewer
