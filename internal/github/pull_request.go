@@ -11,11 +11,17 @@ import (
 )
 
 // ResolveComment 补齐评论事件缺少的 PR 信息，保留触发评论和会话标识。
-func ResolveComment(ctx context.Context, item Review) (Review, error) {
+// host 为空时不传 --hostname，沿用 gh 当前认证的主机。
+func ResolveComment(ctx context.Context, item Review, host string) (Review, error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	endpoint := fmt.Sprintf("repos/%s/pulls/%d", item.Repo, item.Number)
-	cmd := exec.CommandContext(ctx, "gh", "api", "--hostname", "github.com", endpoint)
+	args := []string{"api"}
+	if host = strings.TrimSpace(host); host != "" {
+		args = append(args, "--hostname", host)
+	}
+	args = append(args, endpoint)
+	cmd := exec.CommandContext(ctx, "gh", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	raw, err := cmd.Output()
