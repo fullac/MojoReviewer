@@ -17,18 +17,22 @@ type reviewTools struct {
 }
 
 func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes) error {
+	// SDK 可能增加内置、Skill 或委派工具。每轮只留下宿主注册的审查工具。
+	if err := clearTools(agent); err != nil {
+		return err
+	}
 	tools := reviewTools{scope: scope, notes: notes}
 	specs := []sdk.ToolSpec{
 		{
 			Name:         "pr_diff_stat",
-			Description:  "返回本次 PR 相对 refs/review/base 的文件列表和增删行数。truncated 为 true 时，提示词里的整份 diff 已被截断，后面的文件不会出现在提示词中。",
+			Description:  "返回本次 PR 相对 refs/review/merge-base 的文件列表和增删行数。truncated 为 true 时，提示词里的整份 diff 已被截断，后面的文件不会出现在提示词中。",
 			Handler:      tools.diffStat,
 			AutoApprove:  true,
 			ParallelSafe: true,
 		},
 		{
 			Name:        "pr_file_diff",
-			Description: "只返回一个文件相对 refs/review/base 的 patch。用它代替把整份 diff 塞进上下文。",
+			Description: "只返回一个文件相对 refs/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
 			Parameters: map[string]sdk.ToolParam{
 				"path": {Type: "string", Description: "检出内的相对路径", Required: true},
 			},
@@ -90,10 +94,17 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 		},
 	}
 	for _, spec := range specs {
-		// 每次审查都重新绑定到当前检出。先卸掉上一次留下的同名工具。
-		_ = agent.UnregisterTool(spec.Name)
 		if err := agent.RegisterTool(spec); err != nil {
 			return fmt.Errorf("注册 %s: %w", spec.Name, err)
+		}
+	}
+	return nil
+}
+
+func clearTools(agent *sdk.Agent) error {
+	for _, tool := range agent.ListTools() {
+		if err := agent.UnregisterTool(tool.Name); err != nil {
+			return fmt.Errorf("卸载非审查工具 %s: %w", tool.Name, err)
 		}
 	}
 	return nil

@@ -20,4 +20,8 @@ go run ./cmd/mojoreviewer
 
 ## 限制
 
-整个进程只用配置里的一组 `agent.provider` 和 `agent.model`，不能按单次任务换模型。审查前会把会话工作目录设到这次检出。模型另外还有一组只在检出内可用的工具：`pr_diff_stat`、`pr_file_diff`、`read_repo_file`、`repo_grep`、`changed_symbols`、`tests_around`、`review_note`。比较基线是 `refs/review/base`。
+整个进程只用配置里的一组 `agent.provider` 和 `agent.model`，不能按单次任务换模型。审查前会把会话工作目录设到这次检出。模型只能使用这 7 个审查工具：`pr_diff_stat`、`pr_file_diff`、`read_repo_file`、`repo_grep`、`changed_symbols`、`tests_around`、`review_note`；SDK 默认工具会被卸载，符号链接也不能绕过检出范围。
+
+`refs/review/base` 保留 base 提交，所有 diff 从共同祖先 `refs/review/merge-base` 开始，避免混入 base 分支在 PR 分叉后的改动。检出完成后读取 diff 不再额外 fetch。
+
+PR 标题、正文、评论和 diff 作为不可信 JSON 数据交给模型，不能改变工具或权限。评论包含常见凭据格式或服务已知的凭据时，会拒绝发布并记录不含凭据的错误消息。

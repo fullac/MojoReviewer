@@ -8,17 +8,12 @@ import (
 
 const maxDiffBytes = 120_000
 
-// Diff 读取当前检出相对 base 的代码差异。失败时返回说明，不让审查因 diff 命令中断。
+// Diff 读取检出相对已固定的共同祖先的差异，不再访问远端。
 func Diff(dir, baseSHA string) (string, error) {
 	if strings.TrimSpace(baseSHA) == "" {
 		return "", fmt.Errorf("缺少 base SHA")
 	}
-	// Keep the base history reachable so a later merge-base or triple-dot
-	// comparison cannot be defeated by a shallow boundary at baseSHA.
-	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", baseSHA+":"+baseRef); err != nil {
-		return "", err
-	}
-	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", baseRef, "HEAD")
+	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", mergeBaseRef, "HEAD")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {
@@ -34,5 +29,5 @@ func truncate(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
-	return text[:limit] + "\n\n…差异过长，已截断。请在仓库目录内用 file_read 查看具体文件。"
+	return text[:limit] + "\n\n…差异过长，已截断。请用 pr_file_diff 和 read_repo_file 查看具体文件。"
 }

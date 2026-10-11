@@ -35,11 +35,11 @@ func (s ToolScope) Stat() (string, error) {
 	if err := s.require(); err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--numstat", baseRef, "HEAD")
+	out, err := gitOutput(s.Dir, "diff", "--numstat", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
-	patch, patchErr := gitOutput(s.Dir, "diff", "--patch", baseRef, "HEAD")
+	patch, patchErr := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD")
 	truncated := patchErr == nil && len(patch) > maxDiffBytes
 	text := formatNumstat(out, truncated)
 	if text == "" {
@@ -48,19 +48,19 @@ func (s ToolScope) Stat() (string, error) {
 	return clip(text, maxStatBytes), nil
 }
 
-// FileDiff 只返回一个文件相对 refs/review/base 的 patch。
+// FileDiff 只返回一个文件相对 refs/review/merge-base 的 patch。
 func (s ToolScope) FileDiff(path string) (string, error) {
 	rel, err := s.clean(path)
 	if err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--patch", baseRef, "HEAD", "--", rel)
+	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", rel)
 	if err != nil {
 		return "", err
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return fmt.Sprintf("（%s 相对 %s 没有差异）", rel, baseRef), nil
+		return fmt.Sprintf("（%s 相对 %s 没有差异）", rel, mergeBaseRef), nil
 	}
 	return clip(out, maxFileDiff), nil
 }
@@ -147,12 +147,15 @@ func (s ToolScope) ChangedSymbols() (string, error) {
 	if err := s.require(); err != nil {
 		return "", err
 	}
-	names, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", baseRef, "HEAD")
+	names, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
 	var hits []string
 	for _, rel := range splitLines(names) {
+		if _, err := s.clean(rel); err != nil {
+			continue
+		}
 		hunks, err := changedLines(s.Dir, rel)
 		if err != nil || len(hunks) == 0 {
 			continue
@@ -172,6 +175,9 @@ func (s ToolScope) ChangedSymbols() (string, error) {
 // TestsAround 列出与改动文件同目录、父目录或测试命名对应的测试文件。
 // path 为空时，用本次 diff 的全部改动文件做种子。
 func (s ToolScope) TestsAround(path string) (string, error) {
+	if err := s.require(); err != nil {
+		return "", err
+	}
 	var seeds []string
 	if strings.TrimSpace(path) != "" {
 		rel, err := s.clean(path)
@@ -180,7 +186,7 @@ func (s ToolScope) TestsAround(path string) (string, error) {
 		}
 		seeds = append(seeds, rel)
 	}
-	changed, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", baseRef, "HEAD")
+	changed, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -189,6 +195,9 @@ func (s ToolScope) TestsAround(path string) (string, error) {
 	var hits []string
 	for _, seed := range seeds {
 		for _, candidate := range testCandidates(s.Dir, seed) {
+			if _, err := s.clean(candidate); err != nil {
+				continue
+			}
 			if seen[candidate] {
 				continue
 			}
@@ -259,6 +268,28 @@ func (s ToolScope) clean(path string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("路径超出本次检出: %s", path)
 	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", err
+	}
+	// 被删除的文件仍可查询 patch。检查最近的现存父路径，既允许这种
+	// 不存在的文件，也拒绝通过文件或目录符号链接读取检出外的内容。
+	ancestor := abs
+	for {
+		resolved, err := filepath.EvalSymlinks(ancestor)
+		if os.IsNotExist(err) && ancestor != root {
+			ancestor = filepath.Dir(ancestor)
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		resolvedRel, err := filepath.Rel(resolvedRoot, resolved)
+		if err != nil || resolvedRel == ".." || strings.HasPrefix(resolvedRel, ".."+string(filepath.Separator)) || filepath.IsAbs(resolvedRel) {
+			return "", fmt.Errorf("符号链接超出本次检出: %s", path)
+		}
+		break
+	}
 	return rel, nil
 }
 
@@ -278,7 +309,7 @@ func formatNumstat(raw string, truncated bool) string {
 }
 
 func changedLines(dir, rel string) ([][2]int, error) {
-	out, err := gitOutput(dir, "diff", "-U0", baseRef, "HEAD", "--", rel)
+	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", rel)
 	if err != nil {
 		return nil, err
 	}

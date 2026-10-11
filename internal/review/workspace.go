@@ -19,8 +19,8 @@ func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace,
 	return prepare(dataDir, repo, cloneURL, sha, sessionKey, "", "")
 }
 
-// PrepareWithBase 准备 PR head，并把 PR base 固定到 refs/review/base。
-// base 的完整历史也会被抓取，确保审查命令可以计算 merge-base。
+// PrepareWithBase 检出 PR head，保留 refs/review/base 并固定共同祖先。
+// head/base 的历史也会被抓取，以便在 shallow checkout 中计算共同祖先。
 func PrepareWithBase(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
 	return prepare(dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA)
 }
@@ -70,6 +70,7 @@ func prepare(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSH
 }
 
 const baseRef = "refs/review/base"
+const mergeBaseRef = "refs/review/merge-base"
 
 // prepareBase creates a stable base ref and makes the head/base histories
 // available. A depth-1 fetch of two commits is insufficient for merge-base:
@@ -93,7 +94,11 @@ func prepareBase(dir, headSHA, baseBranch, baseSHA string) error {
 			return err
 		}
 	}
-	return nil
+	ancestor, err := gitOutput(dir, "merge-base", baseRef, "HEAD")
+	if err != nil {
+		return fmt.Errorf("计算 PR 共同祖先失败: %w", err)
+	}
+	return git(dir, "update-ref", mergeBaseRef, strings.TrimSpace(ancestor))
 }
 
 func git(dir string, args ...string) error {

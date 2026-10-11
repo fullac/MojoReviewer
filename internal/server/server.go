@@ -144,7 +144,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		log.Printf("审查失败 %s: %v", item.SessionKey, err)
 		return
 	}
-	if err := review.PostComment(item.Repo, item.Number, result.Text); err != nil {
+	if err := review.PostComment(item.Repo, item.Number, result.Text, s.cfg.Agent.APIKey, s.cfg.GitHub.Token, s.cfg.GitHub.WebhookSecret); err != nil {
 		log.Printf("发布评论失败 %s: %v", item.SessionKey, err)
 		return
 	}
@@ -153,7 +153,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 
 func (s *Server) postFailure(item github.Review, stage string, err error) {
 	log.Printf("%s %s: %v", stage, item.SessionKey, err)
-	if postErr := review.PostComment(item.Repo, item.Number, fmt.Sprintf("%s：%v", stage, err)); postErr != nil {
+	if postErr := review.PostComment(item.Repo, item.Number, fmt.Sprintf("%s：%v", stage, err), s.cfg.Agent.APIKey, s.cfg.GitHub.Token, s.cfg.GitHub.WebhookSecret); postErr != nil {
 		log.Printf("发布失败评论失败 %s: %v", item.SessionKey, postErr)
 	}
 }
