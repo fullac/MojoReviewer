@@ -21,3 +21,11 @@ go run ./cmd/mojoreviewer
 ## 限制
 
 整个进程只用配置里的一组 `agent.provider` 和 `agent.model`，不能按单次任务换模型。审查前会把会话工作目录设到这次检出。模型另外还有一组只在检出内可用的工具：`pr_diff_stat`、`pr_file_diff`、`read_repo_file`、`repo_grep`、`changed_symbols`、`tests_around`、`review_note`。比较基线是 `refs/review/base`。
+
+## CI
+
+向 `main` 提交或更新非草稿 Pull Request 时，GitHub Actions 会跑 `go vet`、`go test` 和 `go build`。工作流会额外检出公开的 `yurika0211/lucky-agent` 到相邻的 `luckyagent/`，以匹配本地 `replace => ../luckyagent`。
+
+## License
+
+MIT。见 [LICENSE](LICENSE)。

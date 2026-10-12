@@ -16,6 +16,8 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 ## 布局
 
 ```
+.github/workflows/ci.yml     PR 到 main 时跑 vet/test/build
+LICENSE                      MIT
 cmd/mojoreviewer/main.go     读配置、把 token 放进 GH_TOKEN、启动 runner 和 HTTP
 internal/server/server.go    POST /webhook/github、GET /health、单个 worker
 internal/github/event.go     pull_request 与 issue_comment 解析，HMAC 校验
@@ -73,7 +75,10 @@ internal/config/config.go    .MojoReviewer/config.json
 ```bash
 go test ./...
 go vet ./...
+go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ```
+
+向 `main` 开非草稿 PR 会触发 `.github/workflows/ci.yml` 做同样检查。CI 会把 `yurika0211/lucky-agent` 检到仓库旁的 `luckyagent/`，对齐 `go.mod` 的 `replace`。
 
 改 diff、路径范围或 webhook 解析时，补对应包的测试。涉及检出的测试用 `t.TempDir()` 里的本地 git 仓库，不要打到 GitHub。
 
