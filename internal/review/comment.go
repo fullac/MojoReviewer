@@ -19,7 +19,10 @@ func PostComment(repo string, number int, body, host string) error {
 		body = BotPrefix + "\n\n" + body
 	}
 	cmd := exec.Command("gh", "pr", "comment", fmt.Sprint(number), "--repo", repo, "--body", body)
-	cmd.Env = append(os.Environ(), "GH_HOST="+strings.TrimSpace(host))
+	// host 为空时不要写 GH_HOST=，否则会盖掉环境里已有的默认主机。
+	if host = strings.TrimSpace(host); host != "" {
+		cmd.Env = append(os.Environ(), "GH_HOST="+host)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
