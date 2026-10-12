@@ -54,12 +54,14 @@ type GitHubConfig struct {
 
 // AgentConfig 是嵌入的 LuckyAgent。一个进程只用一个模型。
 type AgentConfig struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	APIBase     string
-	TaskTimeout time.Duration
-	HomeDir     string
+	MaxContextTokens int
+	RequestTimeout   time.Duration
+	Provider         string
+	Model            string
+	APIKey           string
+	APIBase          string
+	TaskTimeout      time.Duration
+	HomeDir          string
 }
 
 type fileConfig struct {
@@ -77,12 +79,14 @@ type fileConfig struct {
 		TriggerUser   string   `json:"trigger_user"`
 	} `json:"github"`
 	Agent struct {
-		Provider    string `json:"provider"`
-		Model       string `json:"model"`
-		APIKey      string `json:"api_key"`
-		APIBase     string `json:"api_base"`
-		TaskTimeout string `json:"task_timeout"`
-		HomeDir     string `json:"home_dir"`
+		MaxContextTokens int    `json:"max_context_tokens"`
+		RequestTimeout   string `json:"request_timeout"`
+		Provider         string `json:"provider"`
+		Model            string `json:"model"`
+		APIKey           string `json:"api_key"`
+		APIBase          string `json:"api_base"`
+		TaskTimeout      string `json:"task_timeout"`
+		HomeDir          string `json:"home_dir"`
 	} `json:"agent"`
 }
 
@@ -115,6 +119,20 @@ func normalize(file fileConfig) (Config, error) {
 			return Config{}, fmt.Errorf("agent.task_timeout 无效: %s", raw)
 		}
 	}
+	contextTokens := file.Agent.MaxContextTokens
+	if contextTokens == 0 {
+		contextTokens = 40000
+	}
+	if contextTokens < 1000 {
+		return Config{}, fmt.Errorf("agent.max_context_tokens 必须至少为 1000")
+	}
+	requestTimeout := 5 * time.Minute
+	if raw := strings.TrimSpace(file.Agent.RequestTimeout); raw != "" {
+		requestTimeout, err = time.ParseDuration(raw)
+		if err != nil || requestTimeout <= 0 {
+			return Config{}, fmt.Errorf("agent.request_timeout 无效")
+		}
+	}
 	agentHome := strings.TrimSpace(file.Agent.HomeDir)
 	if agentHome == "" {
 		agentHome = filepath.Join(dataDir, "luckyagent")
@@ -134,12 +152,14 @@ func normalize(file fileConfig) (Config, error) {
 			TriggerUser:   strings.TrimPrefix(strings.TrimSpace(file.GitHub.TriggerUser), "@"),
 		},
 		Agent: AgentConfig{
-			Provider:    fallback(file.Agent.Provider, "openai"),
-			Model:       fallback(file.Agent.Model, "gpt-5.4-mini"),
-			APIKey:      strings.TrimSpace(file.Agent.APIKey),
-			APIBase:     strings.TrimSpace(file.Agent.APIBase),
-			TaskTimeout: timeout,
-			HomeDir:     agentHome,
+			MaxContextTokens: contextTokens,
+			RequestTimeout:   requestTimeout,
+			Provider:         fallback(file.Agent.Provider, "openai"),
+			Model:            fallback(file.Agent.Model, "gpt-5.4-mini"),
+			APIKey:           strings.TrimSpace(file.Agent.APIKey),
+			APIBase:          strings.TrimSpace(file.Agent.APIBase),
+			TaskTimeout:      timeout,
+			HomeDir:          agentHome,
 		},
 	}
 	if cfg.Server.Port == 0 {

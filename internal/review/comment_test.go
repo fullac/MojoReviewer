@@ -64,3 +64,23 @@ printf '%s\n' "$@" >> "$MOJO_TEST_COMMENT"
 		}
 	})
 }
+
+func TestPostCommentURLRequiresSuccessfulPublish(t *testing.T) {
+	dir := t.TempDir()
+	gh := filepath.Join(dir, "gh")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf 'https://example.test/acme/web/pull/7#issuecomment-1\\n'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	url, err := PostCommentURL("acme/web", 7, "review", "github.com")
+	if err != nil || url != "https://example.test/acme/web/pull/7#issuecomment-1" {
+		t.Fatalf("receipt: %q %v", url, err)
+	}
+	if err := os.WriteFile(gh, []byte("#!/bin/sh\nprintf 'https://example.test/fake\\n'\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	url, err = PostCommentURL("acme/web", 7, "review", "github.com")
+	if err == nil || url != "" {
+		t.Fatal("failed publication got success receipt")
+	}
+}

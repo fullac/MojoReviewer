@@ -91,3 +91,21 @@ func writeConfig(t *testing.T, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestManagedContextAndRequestTimeout(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeConfig(t, `{"agent":{"api_key":"fixture","max_context_tokens":40000,"request_timeout":"300s"},"github":{"webhook_secret":"fixture"}}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.MaxContextTokens != 40000 || cfg.Agent.RequestTimeout.String() != "5m0s" {
+		t.Fatal("limits not applied")
+	}
+	for _, fields := range []string{`"max_context_tokens":-1`, `"request_timeout":"zero"`, `"request_timeout":"0s"`} {
+		writeConfig(t, `{"agent":{"api_key":"fixture",`+fields+`},"github":{"webhook_secret":"fixture"}}`)
+		if _, err := Load(); err == nil {
+			t.Fatal("invalid limit accepted")
+		}
+	}
+}

@@ -20,9 +20,13 @@ type Runner struct {
 
 // New 启动嵌入式 LuckyAgent。HomeDir 必须是本服务自己的目录。
 func New(cfg config.AgentConfig) (*Runner, error) {
+	if err := writeRuntimeConfig(cfg); err != nil {
+		return nil, err
+	}
 	auto := true
 	agent, err := sdk.New(sdk.Config{
 		HomeDir:      cfg.HomeDir,
+		LoadExisting: true,
 		Provider:     cfg.Provider,
 		Model:        cfg.Model,
 		APIKey:       cfg.APIKey,
@@ -107,7 +111,6 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	}
 	return result, nil
 }
-
 
 // bootstrapDisableTools is the minimum deny-list applied at sdk.New.
 // The real restriction is lockToolsToReviewOnly after review tools are registered.

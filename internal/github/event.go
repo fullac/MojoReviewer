@@ -11,6 +11,7 @@ import (
 
 // Review 是一次需要审查的 PR。
 type Review struct {
+	AttemptID  string // generated locally; never read from webhook payloads
 	Repo       string
 	Number     int
 	Title      string

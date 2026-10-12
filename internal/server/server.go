@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
@@ -27,6 +29,8 @@ type Server struct {
 	store   *store.Store
 	allowed map[string]bool
 	jobs    chan github.Review
+	mu      sync.Mutex
+	pending map[string]bool
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -35,11 +39,14 @@ func New(cfg config.Config, runner *agent.Runner, st *store.Store) *Server {
 	for _, repo := range cfg.GitHub.Repos {
 		allowed[repo] = true
 	}
-	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32)}
+	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32), pending: map[string]bool{}}
 }
 
 // Start 启动 HTTP 服务和单个审查 worker。
 func (s *Server) Start(ctx context.Context) error {
+	if err := s.store.InterruptActivities(); err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,18 +90,44 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ignored"}`))
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if item.Comment == "" && s.pending[item.SessionKey+":"+item.HeadSHA] {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
+		return
+	}
 	if existing, ok := s.store.Get(item.SessionKey); ok && item.Comment == "" && existing.HeadSHA == item.HeadSHA {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
 		return
 	}
-	select {
-	case s.jobs <- *item:
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"status":"queued"}`))
-	default:
-		http.Error(w, "队列已满", http.StatusTooManyRequests)
+	item.AttemptID = fmt.Sprint(time.Now().UnixNano())
+	if delivery := r.Header.Get("X-GitHub-Delivery"); delivery != "" && len(delivery) <= 128 {
+		item.AttemptID = "github:" + delivery
+		seen, err := s.store.HasActivity(item.AttemptID)
+		if err != nil {
+			http.Error(w, "读取投递记录失败", 500)
+			return
+		}
+		if seen {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"status":"duplicate"}`))
+			return
+		}
 	}
+	if len(s.jobs) == cap(s.jobs) {
+		http.Error(w, "队列已满", http.StatusTooManyRequests)
+		return
+	}
+
+	s.pending[item.SessionKey+":"+item.HeadSHA] = true
+	if err := s.store.Activity(store.Activity{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}); err != nil {
+		log.Printf("记录排队状态失败")
+	}
+	s.jobs <- *item
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"status":"queued"}`))
 }
 
 func (s *Server) worker(ctx context.Context) {
@@ -109,8 +142,39 @@ func (s *Server) worker(ctx context.Context) {
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
+	key := item.SessionKey + ":" + item.HeadSHA
+	s.mu.Lock()
+	id := item.AttemptID
+	s.mu.Unlock()
+	if id == "" {
+		id = fmt.Sprint(time.Now().UnixNano())
+	}
+	activity := store.Activity{ID: id, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "running"}
+	_ = s.store.Activity(activity)
+	defer func() {
+		if activity.State == "running" {
+			activity.State = "failed"
+		}
+		if err := s.store.Activity(activity); err != nil {
+			log.Printf("记录审查状态失败")
+		}
+		s.mu.Lock()
+		delete(s.pending, key)
+		s.mu.Unlock()
+	}()
+	// Once an automatic attempt actually starts, reserve its SHA even if setup fails.
+	// Merely queued attempts remain recoverable after a process restart.
+	if item.Comment == "" {
+		existing, _ := s.store.Get(item.SessionKey)
+		existing.Repo, existing.Number, existing.HeadSHA = item.Repo, item.Number, item.HeadSHA
+		if err := s.store.Put(item.SessionKey, existing); err != nil {
+			activity.Stage = "storage"
+			return
+		}
+	}
 	log.Printf("开始审查 %s", item.SessionKey)
 	if item.Comment != "" {
+		activity.Stage = "metadata"
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
 			s.postFailure(item, "补齐 PR 信息失败", err)
@@ -118,6 +182,8 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 		item = resolved
 	}
+	activity.HeadSHA = item.HeadSHA
+	activity.Stage = "checkout"
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		s.postFailure(item, "准备仓库失败", err)
@@ -132,6 +198,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	existing, _ := s.store.Get(item.SessionKey)
+	activity.Stage = "model"
 	result, err := s.runner.Review(ctx, agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
@@ -145,10 +212,15 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		log.Printf("审查失败 %s: %v", item.SessionKey, err)
 		return
 	}
-	if err := review.PostComment(item.Repo, item.Number, result.Text, s.cfg.GitHub.Host); err != nil {
+	activity.Stage = "publish"
+	commentURL, err := review.PostCommentURL(item.Repo, item.Number, result.Text, s.cfg.GitHub.Host)
+	if err != nil {
 		log.Printf("发布评论失败 %s: %v", item.SessionKey, err)
 		return
 	}
+	activity.State = "completed"
+	activity.Stage = "published"
+	activity.CommentURL = commentURL
 	log.Printf("审查完成 %s", item.SessionKey)
 }
 
