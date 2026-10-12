@@ -29,11 +29,9 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 		APIBase:      cfg.APIBase,
 		SystemPrompt: systemPrompt,
 		AutoApprove:  &auto,
-		DisableTools: []string{
-			"web_fetch", "web_search", "http_request",
-			"file_write", "file_patch", "file_delete", "file_move", "file_mkdir",
-			"computer_act", "computer_open", "computer_click", "computer_type",
-		},
+		// Bootstrap still registers LuckyAgent builtins. We switch to an allow-list
+		// of review tools after registerReviewTools runs (see lockToolsToReviewOnly).
+		DisableTools: bootstrapDisableTools,
 	})
 	if err != nil {
 		return nil, err
@@ -95,6 +93,9 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
+	if err := lockToolsToReviewOnly(r.agent); err != nil {
+		return ReviewResult{SessionID: sessionID}, err
+	}
 	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
@@ -107,6 +108,58 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	return result, nil
 }
 
+
+// bootstrapDisableTools is the minimum deny-list applied at sdk.New.
+// The real restriction is lockToolsToReviewOnly after review tools are registered.
+var bootstrapDisableTools = []string{
+	"terminal",
+	"web_fetch", "web_search", "http_request", "opencli",
+	"file_write", "file_patch", "file_delete", "file_move", "file_mkdir",
+	"file_read", "file_list", "document_read",
+	"computer_act", "computer_observe",
+	"rag_index", "rag_search",
+	"remember", "recall", "memory_hygiene",
+	"delegate_task", "delegate_cancel", "list_tasks", "task_status", "wait_for_tasks",
+	"autonomy", "cron",
+	"image_generate", "text_to_speech",
+}
+
+// reviewToolAllowlist is the only tool set the model may call during a review.
+// Keep in sync with registerReviewTools.
+var reviewToolAllowlist = map[string]struct{}{
+	"pr_diff_stat":    {},
+	"pr_file_diff":    {},
+	"read_repo_file":  {},
+	"repo_grep":       {},
+	"changed_symbols": {},
+	"tests_around":    {},
+	"review_note":     {},
+}
+
+// lockToolsToReviewOnly disables every registered tool outside the review allow-list.
+// Review tools stay enabled; unknown future builtins are denied by default.
+func lockToolsToReviewOnly(agent *sdk.Agent) error {
+	if agent == nil {
+		return fmt.Errorf("agent 为空")
+	}
+	for _, info := range agent.ListTools() {
+		if _, ok := reviewToolAllowlist[info.Name]; ok {
+			if !info.Enabled {
+				if err := agent.EnableTool(info.Name); err != nil {
+					return fmt.Errorf("启用审查工具 %s: %w", info.Name, err)
+				}
+			}
+			continue
+		}
+		if !info.Enabled {
+			continue
+		}
+		if err := agent.DisableTool(info.Name); err != nil {
+			return fmt.Errorf("禁用工具 %s: %w", info.Name, err)
+		}
+	}
+	return nil
+}
 
 // setSessionWorkingDir pins the review session cwd to the checkout.
 // LuckyAgent SDK has no SetSessionWorkingDir yet; use the underlying session API.

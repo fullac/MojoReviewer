@@ -60,7 +60,16 @@ internal/config/config.go    .MojoReviewer/config.json
 | `tests_around` | 改动文件附近已有的测试 |
 | `review_note` | 记一条。`severity` 只能是 `严重` 或 `建议` |
 
-`read_repo_file` 和 `pr_file_diff` 拒绝 `..` 和检出外绝对路径。加新工具时保持这个范围，不要给模型写文件、访问网络、或调用桌面控制。`runner.go` 里已禁用的内置工具不要重新打开。
+`read_repo_file` 和 `pr_file_diff` 拒绝 `..` 和检出外绝对路径。加新工具时保持这个范围，不要给模型写文件、访问网络、或调用桌面控制。
+
+工具边界由 `runner.go` 的 allow-list 强制：
+
+1. `sdk.New` 时用 `bootstrapDisableTools` 先关掉明显危险的内置工具。
+2. `registerReviewTools` 挂上这 7 个审查工具。
+3. `lockToolsToReviewOnly` 再把 **不在** `reviewToolAllowlist` 里的全部工具 `DisableTool`。
+4. 会话 cwd 通过 `setSessionWorkingDir` 钉到本次检出（SDK 尚无 `SetSessionWorkingDir`）。
+
+不要重新 `EnableTool` 打开 `terminal` / `file_read` / 网络类工具。新增审查工具时，同步更新 `registerReviewTools` 和 `reviewToolAllowlist`。
 
 ## 配置与数据
 
