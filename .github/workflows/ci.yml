@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review]
+
+concurrency:
+  group: ci-pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event.pull_request.draft == false
+    steps:
+      - name: Checkout MojoReviewer
+        uses: actions/checkout@v4
+        with:
+          path: MojoReviewer
+
+      # go.mod replace points at ../luckyagent next to this repo.
+      - name: Checkout LuckyAgent (local replace target)
+        uses: actions/checkout@v4
+        with:
+          repository: yurika0211/lucky-agent
+          path: luckyagent
+          # Public dependency; pin to default branch for reproducible CI of this service.
+          ref: master
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: MojoReviewer/go.mod
+          cache-dependency-path: MojoReviewer/go.sum
+
+      - name: Download modules
+        working-directory: MojoReviewer
+        run: go mod download
+
+      - name: Vet
+        working-directory: MojoReviewer
+        run: go vet ./...
+
+      - name: Test
+        working-directory: MojoReviewer
+        run: go test ./...
+
+      - name: Build
+        working-directory: MojoReviewer
+        run: go build -o /tmp/mojoreviewer ./cmd/mojoreviewer

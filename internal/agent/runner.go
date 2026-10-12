@@ -88,7 +88,7 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 			return ReviewResult{}, err
 		}
 	}
-	if err := r.agent.SetSessionWorkingDir(sessionID, input.WorkDir); err != nil {
+	if err := setSessionWorkingDir(r.agent, sessionID, input.WorkDir); err != nil {
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
 	}
 	notes := &review.Notes{}
@@ -105,6 +105,33 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		result.Noted = true
 	}
 	return result, nil
+}
+
+
+// setSessionWorkingDir pins the review session cwd to the checkout.
+// LuckyAgent SDK has no SetSessionWorkingDir yet; use the underlying session API.
+func setSessionWorkingDir(agent *sdk.Agent, sessionID, dir string) error {
+	if agent == nil {
+		return fmt.Errorf("agent 为空")
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	dir = strings.TrimSpace(dir)
+	if sessionID == "" {
+		return fmt.Errorf("session id 为空")
+	}
+	if dir == "" {
+		return fmt.Errorf("工作目录为空")
+	}
+	inner := agent.Underlying()
+	if inner == nil {
+		return fmt.Errorf("underlying agent 不可用")
+	}
+	sess, ok := inner.Sessions().Get(sessionID)
+	if !ok || sess == nil {
+		return fmt.Errorf("session %q 不存在", sessionID)
+	}
+	sess.SetCwd(dir)
+	return sess.Save()
 }
 
 func prompt(input ReviewInput) string {

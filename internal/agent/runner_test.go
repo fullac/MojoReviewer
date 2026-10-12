@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/yurika0211/luckyagent/sdk"
 )
 
 func TestPromptUsesReviewTools(t *testing.T) {
@@ -47,3 +48,36 @@ func TestArgHelpers(t *testing.T) {
 		t.Fatalf("argInt nil = %d", got)
 	}
 }
+
+func TestSetSessionWorkingDir(t *testing.T) {
+	home := t.TempDir()
+	auto := true
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:     home,
+		Provider:    "openai",
+		Model:       "gpt-test",
+		APIKey:      "sk-test",
+		AutoApprove: &auto,
+	})
+	if err != nil {
+		t.Fatalf("sdk.New: %v", err)
+	}
+	defer agent.Close()
+
+	sessionID, err := agent.NewSessionWithTitle("cwd-test")
+	if err != nil {
+		t.Fatalf("NewSessionWithTitle: %v", err)
+	}
+	dir := t.TempDir()
+	if err := setSessionWorkingDir(agent, sessionID, dir); err != nil {
+		t.Fatalf("setSessionWorkingDir: %v", err)
+	}
+	sess, ok := agent.Underlying().Sessions().Get(sessionID)
+	if !ok || sess == nil {
+		t.Fatal("session missing")
+	}
+	if got := sess.GetCwd(); got != dir {
+		t.Fatalf("cwd = %q, want %q", got, dir)
+	}
+}
+
