@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent/sdk"
 )
 
@@ -49,6 +50,54 @@ func TestArgHelpers(t *testing.T) {
 	}
 }
 
+
+func TestLockToolsToReviewOnly(t *testing.T) {
+	home := t.TempDir()
+	auto := true
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:      home,
+		Provider:     "openai",
+		Model:        "gpt-test",
+		APIKey:       "sk-test",
+		SystemPrompt: "test",
+		AutoApprove:  &auto,
+		DisableTools: bootstrapDisableTools,
+	})
+	if err != nil {
+		t.Fatalf("sdk.New: %v", err)
+	}
+	defer agent.Close()
+
+	notes := &review.Notes{}
+	scope := review.ToolScope{Dir: t.TempDir()}
+	if err := registerReviewTools(agent, scope, notes); err != nil {
+		t.Fatalf("registerReviewTools: %v", err)
+	}
+	if err := lockToolsToReviewOnly(agent); err != nil {
+		t.Fatalf("lockToolsToReviewOnly: %v", err)
+	}
+
+	enabled := map[string]bool{}
+	for _, info := range agent.ListTools() {
+		if info.Enabled {
+			enabled[info.Name] = true
+		}
+	}
+	for name := range reviewToolAllowlist {
+		if !enabled[name] {
+			t.Fatalf("expected review tool enabled: %s", name)
+		}
+		delete(enabled, name)
+	}
+	if len(enabled) != 0 {
+		names := make([]string, 0, len(enabled))
+		for name := range enabled {
+			names = append(names, name)
+		}
+		t.Fatalf("unexpected enabled tools: %v", names)
+	}
+}
+
 func TestSetSessionWorkingDir(t *testing.T) {
 	home := t.TempDir()
 	auto := true
@@ -80,4 +129,3 @@ func TestSetSessionWorkingDir(t *testing.T) {
 		t.Fatalf("cwd = %q, want %q", got, dir)
 	}
 }
-
