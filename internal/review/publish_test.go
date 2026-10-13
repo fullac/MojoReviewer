@@ -1,6 +1,7 @@
 package review
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -204,5 +205,81 @@ func TestPublishFixPushDisabled(t *testing.T) {
 	}
 	if got.Pushed || got.Skipped == "" {
 		t.Fatalf("got=%+v", got)
+	}
+}
+
+func TestPublishFixMaxChangedFiles(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("没有 git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	run(t, "", "git", "init", "--bare", origin)
+	run(t, "", "git", "clone", origin, seed)
+	run(t, seed, "git", "config", "user.email", "mojo@example.com")
+	run(t, seed, "git", "config", "user.name", "mojo")
+	if err := os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "git", "add", "a.txt")
+	run(t, seed, "git", "commit", "-m", "init")
+	run(t, seed, "git", "branch", "-M", "main")
+	run(t, seed, "git", "checkout", "-b", "feature")
+	run(t, seed, "git", "commit", "--allow-empty", "-m", "head")
+	head := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
+	base := strings.TrimSpace(run(t, seed, "git", "rev-parse", "main"))
+	run(t, seed, "git", "push", "origin", "main")
+	run(t, seed, "git", "push", "-u", "origin", "feature")
+	ws, err := PrepareWithBase(root, "acme/web", origin, head, "acme/web#maxf", "main", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 3; i++ {
+		name := filepath.Join(ws.Dir, fmt.Sprintf("f%d.txt", i))
+		if err := os.WriteFile(name, []byte("x\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err = PublishFix(ws.Dir, "feature", "main", "too many", PublishLimits{PushEnabled: true, MaxChangedFiles: 2})
+	if err == nil || !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestPublishFixMaxDiffBytes(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("没有 git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	run(t, "", "git", "init", "--bare", origin)
+	run(t, "", "git", "clone", origin, seed)
+	run(t, seed, "git", "config", "user.email", "mojo@example.com")
+	run(t, seed, "git", "config", "user.name", "mojo")
+	if err := os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "git", "add", "a.txt")
+	run(t, seed, "git", "commit", "-m", "init")
+	run(t, seed, "git", "branch", "-M", "main")
+	run(t, seed, "git", "checkout", "-b", "feature")
+	run(t, seed, "git", "commit", "--allow-empty", "-m", "head")
+	head := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
+	base := strings.TrimSpace(run(t, seed, "git", "rev-parse", "main"))
+	run(t, seed, "git", "push", "origin", "main")
+	run(t, seed, "git", "push", "-u", "origin", "feature")
+	ws, err := PrepareWithBase(root, "acme/web", origin, head, "acme/web#maxd", "main", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	big := strings.Repeat("Z", 5000)
+	if err := os.WriteFile(filepath.Join(ws.Dir, "a.txt"), []byte(big+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = PublishFix(ws.Dir, "feature", "main", "big", PublishLimits{PushEnabled: true, MaxDiffBytes: 100})
+	if err == nil || !strings.Contains(err.Error(), "超过上限") {
+		t.Fatalf("err=%v", err)
 	}
 }

@@ -48,6 +48,7 @@ internal/agent/register.go   每次审查重新绑定那 7 个工具
 internal/store/store.go      data_dir/reviews.json，记 head SHA 和 session ID
 internal/projectmem/         项目记忆：选文档、增量索引、审查前提示注入
 internal/config/config.go    .MojoReviewer/config.json
+config.example.json          可提交的配置样例（无真实密钥）
 ```
 
 模块是 `github.com/mojoreviewer/mojoreviewer`。LuckyAgent 用 `replace` 指到 `../luckyagent`。
@@ -62,6 +63,15 @@ internal/config/config.go    .MojoReviewer/config.json
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
 7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
 8. `review.PostComment` 发回 PR。
+
+## fix 路径
+
+1. 评论解析为 `IntentFix`，且 `agent.fix_enabled`。
+2. `fix_allowed_authors` 非空时校验 `item.Author`。
+3. 与审查相同方式 `PrepareWithBase` + 项目记忆。
+4. `runner.Fix`：fix 工具白名单 + 会话 cwd 钉在检出。
+5. `review.PublishFix`：敏感路径 / 体量门禁 → 可选 commit/push 到 head。
+6. 评论回报 fix 结果与 publish 摘要；成功 push 时更新 `reviews.json` 的 head SHA。
 
 ## 模型工具
 

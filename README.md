@@ -1,36 +1,87 @@
 # MojoReviewer
 
-用 LuckyAgent 公开 SDK 做 GitHub Pull Request 只读审查。
+进程内嵌 [LuckyAgent](https://github.com/yurika0211/lucky-agent) 的 GitHub PR 审查服务。
 
-它接收 GitHub webhook，把 PR 克隆到本机，再把仓库路径、截断后的 diff 和一组检出内只读工具交给进程内的 LuckyAgent。服务会把仓库里的高信号文档（如 README、AGENTS.md、docs）增量写入隔离的项目记忆，并在审查前提取相关片段。服务再用 `gh` 把结论文字发回 PR。它不修改文件，不提交，不推送，不创建或合并 PR。
+接收 webhook → 克隆 PR 检出 → 注入项目记忆 → 用检出内工具跑一轮 → 用 `gh` 回评论。
 
-## 运行
+**默认只读审查。** 可选开启 `fix`：模型改工作区文件，由**宿主**按配置 commit/push 到 PR head（非 force）。不创建 PR、不 merge。
 
-配置写在项目里的 `.MojoReviewer/config.json`。先填 `agent.api_key` 和 `github.webhook_secret`。`github.host` 可选，填 GitHub Enterprise 的主机名。补齐 PR 信息和发布评论都会用它；留空则沿用 `gh` 已配置的主机。`github.token` 用来克隆私有仓库和发布评论。`github.repos` 为空时接受所有仓库。`github.trigger_user` 填了之后，评论里 @ 这个名字会再审一次。
+## 快速开始
+
+1. 复制示例配置：
+
+```bash
+mkdir -p .MojoReviewer
+cp config.example.json .MojoReviewer/config.json
+# 填入 agent.api_key、github.webhook_secret；私有仓再填 github.token
+```
+
+2. 本地依赖：相邻目录有 `luckyagent`（`go.mod` 里 `replace => ../luckyagent`），本机有 `git` / `gh`。
+
+3. 运行：
 
 ```bash
 go run ./cmd/mojoreviewer
 ```
 
-监听地址来自 `server.host` 和 `server.port`，默认是 `127.0.0.1:9968`。webhook 地址是 `POST /webhook/github`。同一个 PR 的同一个提交只审一次；评论触发不受这个限制。评论可带意图：`@触发名 review ...`（默认）、`@触发名 remember <事实>`、`@触发名 fix ...`（需配置 `agent.fix_enabled`；改完后宿主会 commit 并 push 到 PR 分支）。审查一次只跑一个，队列最多 32 个。
+默认监听 `127.0.0.1:9968`，webhook：`POST /webhook/github`，健康检查：`GET /health`。
 
-评论触发的任务开始执行时，会用 `gh api` 查询 PR 的最新 head SHA、base ref/SHA 和仓库克隆地址，再准备检出和 diff，并复用已有会话。查询 PR 信息或准备仓库失败时，会把归类后的原因作为 `【MojoReviewer】` 评论发回 PR，不附带命令输出、本地路径或令牌；完整错误只写日志。评论发布失败也只记录日志。
+## 评论意图
 
-`data_dir` 为空时数据放在 `~/.mojoreviewer`。LuckyAgent 使用其中单独的 `luckyagent` 目录，不读写 `~/.luckyagent`。`agent.home_dir` 可以改掉这个位置。项目记忆元数据在 `project_memory.json`；向量索引与长期记忆在 `luckyagent/` 内。
+在 PR 评论里 `@github.trigger_user`（如 `@mojo`）：
 
-## 限制
+| 写法 | 行为 |
+| --- | --- |
+| `@mojo` / `@mojo review …` | 只读再审（默认可续会话） |
+| `@mojo remember <事实>` | 写入项目长期记忆，不检出 |
+| `@mojo fix …` | 可写修复（需 `agent.fix_enabled`） |
 
-整个进程只用配置里的一组 `agent.provider` 和 `agent.model`，不能按单次任务换模型。审查前会把会话工作目录设到这次检出。模型另外还有一组只在检出内可用的工具：`pr_diff_stat`、`pr_file_diff`、`read_repo_file`、`repo_grep`、`changed_symbols`、`tests_around`、`review_note`。比较基线是 `refs/review/base`。
+自己发出的评论以 `【MojoReviewer】` 开头，解析时会跳过，避免自触发。
 
-## CI
+## 配置要点
 
-向 `main` 提交或更新非草稿 Pull Request 时，GitHub Actions 会跑 `go vet`、`go test` 和 `go build`。工作流会额外检出公开的 `yurika0211/lucky-agent` 到相邻的 `luckyagent/`，以匹配本地 `replace => ../luckyagent`。
+配置文件：仓库内隐藏目录下的配置（已 gitignore，勿提交密钥）。字段见 [`config.example.json`](config.example.json)。
+
+| 字段 | 说明 |
+| --- | --- |
+| `agent.api_key` | **必填** |
+| `github.webhook_secret` | **必填**，HMAC 校验 |
+| `github.token` | 私有仓克隆 / `gh` 发评论；也可依赖环境 `GH_TOKEN` |
+| `github.host` | 可选 GHES 主机名；空则沿用 `gh` 默认 |
+| `github.repos` | 非空时只接受名单内仓库 |
+| `github.trigger_user` | 评论 @ 触发名 |
+| `agent.fix_enabled` | 默认 `false`；是否接受 fix |
+| `agent.fix_push_enabled` | 默认跟随 `fix_enabled`；`false` 时只改工作区不 push |
+| `agent.fix_allowed_authors` | 非空则仅这些 login 可 fix |
+| `agent.fix_max_changed_files` | 单次提交文件数上限，默认 40 |
+| `agent.fix_max_diff_bytes` | 单次改动体量上限，默认 200000 |
+| `data_dir` | 默认 `~/.mojoreviewer` |
+| `agent.home_dir` | LuckyAgent 家目录，默认 `$data_dir/luckyagent` |
+
+完整边界与流程见 [`AGENTS.md`](AGENTS.md)。
+
+## 安全边界（摘要）
+
+- Webhook：secret 必填、body ≤ 2 MiB、HMAC；队列 32，满则 429。
+- 审查工具白名单；路径不得逃出本次检出。
+- fix 额外仅 `file_read` / `file_list` / `file_write` / `file_patch` / `file_mkdir`；无 terminal / 网络 / git。
+- 宿主提交拒绝 `.env*`、密钥类文件、`.git/` 等；push 非 force，且拒绝 head==base。
+- 失败评论只写阶段与归类原因；路径、令牌、命令 stderr 只进日志。
+
+## 项目记忆
+
+首次/增量索引检出中的高信号文档（README、AGENTS、docs 等），元数据在 `$data_dir/project_memory.json`，向量与长期记忆在 `luckyagent/` 内，按 `repo:<owner/name>:` 隔离。审查前提取相关片段注入提示词；`remember` 可人工补事实。
+
+## 验证
+
+```bash
+go test ./...
+go vet ./...
+go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
+```
+
+向 `main` 的非草稿 PR 会跑 `.github/workflows/ci.yml`（同样三步；CI 会检出公开的 `yurika0211/lucky-agent` 到相邻 `luckyagent/`）。
 
 ## License
 
 MIT。见 [LICENSE](LICENSE)。
-
-## 配置要点
-
-`agent.fix_enabled` 默认关闭。开启后可用 `@触发名 fix ...`；宿主按 `fix_push_enabled` 决定是否 commit/push。
-可用 `fix_allowed_authors`、`fix_max_changed_files`、`fix_max_diff_bytes` 收紧门禁；敏感路径不会被提交。

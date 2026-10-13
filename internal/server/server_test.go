@@ -388,3 +388,18 @@ func TestFixAuthorDenied(t *testing.T) {
 		t.Fatalf("comment=%s err=%v", comment, err)
 	}
 }
+
+func TestFixAuthorAllowedHelper(t *testing.T) {
+	if !fixAuthorAllowed(nil, "anyone") {
+		t.Fatal("空名单应放行")
+	}
+	if !fixAuthorAllowed([]string{"ada"}, "Ada") {
+		t.Fatal("大小写应忽略")
+	}
+	if !fixAuthorAllowed([]string{"ada"}, "@ada") {
+		t.Fatal("@ 前缀应忽略")
+	}
+	if fixAuthorAllowed([]string{"ada"}, "bob") {
+		t.Fatal("未授权应拒绝")
+	}
+}
