@@ -188,7 +188,7 @@ func TestFixPrompt(t *testing.T) {
 		WorkDir: "/tmp/review",
 		Diff:    "diff",
 	})
-	for _, want := range []string{"file_patch", "file_write", "不要 git commit", "改超时", "refs/review/base"} {
+	for _, want := range []string{"file_patch", "file_write", "宿主提交", "改超时", "refs/review/base"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fix 提示缺少 %q:\n%s", want, got)
 		}

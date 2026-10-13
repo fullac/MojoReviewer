@@ -12,7 +12,7 @@
 go run ./cmd/mojoreviewer
 ```
 
-监听地址来自 `server.host` 和 `server.port`，默认是 `127.0.0.1:9968`。webhook 地址是 `POST /webhook/github`。同一个 PR 的同一个提交只审一次；评论触发不受这个限制。评论可带意图：`@触发名 review ...`（默认）、`@触发名 remember <事实>`、`@触发名 fix ...`（需配置 `agent.fix_enabled`；只改工作区，不自动提交）。审查一次只跑一个，队列最多 32 个。
+监听地址来自 `server.host` 和 `server.port`，默认是 `127.0.0.1:9968`。webhook 地址是 `POST /webhook/github`。同一个 PR 的同一个提交只审一次；评论触发不受这个限制。评论可带意图：`@触发名 review ...`（默认）、`@触发名 remember <事实>`、`@触发名 fix ...`（需配置 `agent.fix_enabled`；改完后宿主会 commit 并 push 到 PR 分支）。审查一次只跑一个，队列最多 32 个。
 
 评论触发的任务开始执行时，会用 `gh api` 查询 PR 的最新 head SHA、base ref/SHA 和仓库克隆地址，再准备检出和 diff，并复用已有会话。查询 PR 信息或准备仓库失败时，会把归类后的原因作为 `【MojoReviewer】` 评论发回 PR，不附带命令输出、本地路径或令牌；完整错误只写日志。评论发布失败也只记录日志。
 

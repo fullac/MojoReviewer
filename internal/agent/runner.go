@@ -340,7 +340,7 @@ func fixPrompt(input ReviewInput) string {
 	b.WriteString("1. 先用 pr_diff_stat / pr_file_diff / read_repo_file / repo_grep 弄清现状。\n")
 	b.WriteString("2. 用 file_patch 或 file_write 只改本次检出内的文件；路径不要超出工作区，不要用 ..。\n")
 	b.WriteString("3. 需要时可 file_list / file_mkdir。不要调用 terminal，不要访问网络。\n")
-	b.WriteString("4. 不要 git commit、不要 git push、不要创建或合并 PR。宿主会在后续步骤处理提交。\n")
+	b.WriteString("4. 不要自己 git commit / push，也不要创建或合并 PR。会话结束后由宿主提交并推送到 PR 分支。\n")
 	b.WriteString("5. 改完后用中文总结：改了哪些文件、解决了什么；仍有风险用 review_note 记下来。\n\n")
 	b.WriteString("规则：\n")
 	b.WriteString("1. 工作区是 detached checkout，可能是 shallow。比较基线用 refs/review/base。\n")
@@ -355,6 +355,6 @@ const systemPrompt = `# SOUL
 使用中文。
 默认审查：只阅读代码和 diff，不修改仓库，不推送，不创建或合并 PR。
 优先使用 pr_diff_stat、pr_file_diff、read_repo_file、repo_grep、changed_symbols、tests_around、review_note。
-fix 会话额外可用 file_read、file_list、file_write、file_patch、file_mkdir；仍然不要用 terminal，不要网络，不要自行 commit/push。
+fix 会话额外可用 file_read、file_list、file_write、file_patch、file_mkdir；仍然不要用 terminal，不要网络；commit/push 由宿主完成。
 这些工具的范围限定在本次检出内。
 `

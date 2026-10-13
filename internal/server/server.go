@@ -203,12 +203,39 @@ func (s *Server) runFix(ctx context.Context, item github.Review) {
 	if strings.TrimSpace(body) == "" {
 		body = "fix 会话已结束，但没有返回说明。"
 	}
-	body = "fix 模式（仅改工作区，尚未 commit/push）：\n\n" + body
+	pub, pubErr := review.PublishFix(ws.Dir, item.HeadBranch, item.BaseBranch, publishMessage(item, result.Text))
+	body = "fix 结果：\n\n" + body + "\n\n" + pub.Render()
+	if pubErr != nil {
+		log.Printf("发布修复提交失败 %s: %v", item.SessionKey, pubErr)
+		body += "\n\n提交/推送失败：" + publicFailure(pubErr)
+		if err := review.PostComment(item.Repo, item.Number, body, s.cfg.GitHub.Host); err != nil {
+			log.Printf("发布修复评论失败 %s: %v", item.SessionKey, err)
+		}
+		return
+	}
+	if pub.Changed && pub.CommitSHA != "" {
+		_ = s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA, SessionID: result.SessionID})
+	}
 	if err := review.PostComment(item.Repo, item.Number, body, s.cfg.GitHub.Host); err != nil {
 		log.Printf("发布修复评论失败 %s: %v", item.SessionKey, err)
 		return
 	}
-	log.Printf("修复完成 %s", item.SessionKey)
+	log.Printf("修复完成 %s changed=%v sha=%s", item.SessionKey, pub.Changed, pub.CommitSHA)
+}
+
+func publishMessage(item github.Review, agentText string) string {
+	if note := strings.TrimSpace(item.Instruction); note != "" {
+		return note
+	}
+	text := strings.TrimSpace(agentText)
+	if text == "" {
+		return "apply requested fix"
+	}
+	// 用首行当 commit message，避免整段审查笔记进标题
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	return text
 }
 
 func (s *Server) diffText(item github.Review, dir string) string {

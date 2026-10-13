@@ -355,7 +355,10 @@ func TestFixIntentRunsWhenEnabled(t *testing.T) {
 		t.Fatalf("instruction=%q", runner.fixInputs[0].Review.Instruction)
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "fix 模式") || !strings.Contains(string(comment), "已改超时配置") {
+	if err != nil || !strings.Contains(string(comment), "fix 结果") || !strings.Contains(string(comment), "已改超时配置") {
 		t.Fatalf("未发布 fix 结果: %s %v", comment, err)
+	}
+	if !strings.Contains(string(comment), "未检测到工作区改动") {
+		t.Fatalf("应说明未提交: %s", comment)
 	}
 }
