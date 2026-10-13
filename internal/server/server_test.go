@@ -362,3 +362,29 @@ func TestFixIntentRunsWhenEnabled(t *testing.T) {
 		t.Fatalf("应说明未提交: %s", comment)
 	}
 }
+
+func TestFixAuthorDenied(t *testing.T) {
+	s, runner, _, commentPath := testServer(t, `{"number":7,"title":"t","body":"","user":{"login":"a"},"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///tmp"}},"head":{"ref":"f","sha":"head"}}`, "")
+	runner.fixEnabled = true
+	s.cfg.Agent.FixAllowedAuthors = []string{"owner"}
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo fix 改一下","user":{"login":"intruder"}},"repository":{"full_name":"acme/web"}}`
+	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
+	_, _ = mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issue_comment")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	s.handleWebhook(w, req)
+	item := <-s.jobs
+	// ResolveComment 会用 mock gh 填 Author；这里直接改 item 跑 runOne 路径
+	item.Author = "intruder"
+	item.Intent = github.IntentFix
+	s.runOne(context.Background(), item)
+	if len(runner.fixInputs) != 0 {
+		t.Fatal("未授权作者不应进入 Fix")
+	}
+	comment, err := os.ReadFile(commentPath)
+	if err != nil || !strings.Contains(string(comment), "无权触发 fix") {
+		t.Fatalf("comment=%s err=%v", comment, err)
+	}
+}

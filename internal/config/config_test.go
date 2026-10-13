@@ -110,3 +110,48 @@ func writeConfig(t *testing.T, body string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadFixSecurityOptions(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {
+	    "api_key": "sk-test",
+	    "fix_enabled": true,
+	    "fix_push_enabled": false,
+	    "fix_allowed_authors": ["@Ada", "bob", "ADA"],
+	    "fix_max_changed_files": 12,
+	    "fix_max_diff_bytes": 1000
+	  }
+	}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixEnabled || cfg.Agent.FixPushEnabled {
+		t.Fatalf("push 应显式关闭: %+v", cfg.Agent)
+	}
+	if got := strings.Join(cfg.Agent.FixAllowedAuthors, ","); got != "ada,bob" {
+		t.Fatalf("authors=%v", cfg.Agent.FixAllowedAuthors)
+	}
+	if cfg.Agent.FixMaxChangedFiles != 12 || cfg.Agent.FixMaxDiffBytes != 1000 {
+		t.Fatalf("limits=%d %d", cfg.Agent.FixMaxChangedFiles, cfg.Agent.FixMaxDiffBytes)
+	}
+}
+
+func TestLoadFixPushDefaultsWithFix(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {"api_key": "sk-test", "fix_enabled": true}
+	}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixPushEnabled {
+		t.Fatal("fix_enabled 时默认应允许 push")
+	}
+}

@@ -45,7 +45,7 @@ func TestPublishFixCommitsAndPushes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := PublishFix(ws.Dir, "feature", "main", "改 README")
+	got, err := PublishFix(ws.Dir, "feature", "main", "改 README", PublishLimits{PushEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +93,7 @@ func TestPublishFixNoChanges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := PublishFix(ws.Dir, "feature", "main", "")
+	got, err := PublishFix(ws.Dir, "feature", "main", "", PublishLimits{PushEnabled: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestPublishFixNoChanges(t *testing.T) {
 }
 
 func TestPublishFixRejectsBaseBranch(t *testing.T) {
-	_, err := PublishFix(t.TempDir(), "main", "main", "x")
+	_, err := PublishFix(t.TempDir(), "main", "main", "x", PublishLimits{PushEnabled: true})
 	if err == nil || !strings.Contains(err.Error(), "base") {
 		t.Fatalf("err=%v", err)
 	}
@@ -115,5 +115,94 @@ func TestTruncateCommitMessage(t *testing.T) {
 	}
 	if got := truncateCommitMessage("MojoReviewer fix: already"); got != "MojoReviewer fix: already" {
 		t.Fatalf("got=%q", got)
+	}
+}
+
+func TestPublishPathDenied(t *testing.T) {
+	for _, path := range []string{".env", "certs/app.pem", "id_rsa", "foo/secrets.json", ".git/config"} {
+		if !publishPathDenied(path) {
+			t.Fatalf("%s 应拒绝", path)
+		}
+	}
+	for _, path := range []string{"main.go", "internal/config/config.go", "README.md", "docs/secret-handling.md"} {
+		if publishPathDenied(path) {
+			t.Fatalf("%s 不应拒绝", path)
+		}
+	}
+}
+
+func TestPublishFixRejectsEnvFile(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("没有 git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	run(t, "", "git", "init", "--bare", origin)
+	run(t, "", "git", "clone", origin, seed)
+	run(t, seed, "git", "config", "user.email", "mojo@example.com")
+	run(t, seed, "git", "config", "user.name", "mojo")
+	if err := os.WriteFile(filepath.Join(seed, "ok.go"), []byte("package ok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "git", "add", "ok.go")
+	run(t, seed, "git", "commit", "-m", "init")
+	run(t, seed, "git", "branch", "-M", "main")
+	run(t, seed, "git", "checkout", "-b", "feature")
+	run(t, seed, "git", "commit", "--allow-empty", "-m", "head")
+	head := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
+	base := strings.TrimSpace(run(t, seed, "git", "rev-parse", "main"))
+	run(t, seed, "git", "push", "origin", "main")
+	run(t, seed, "git", "push", "-u", "origin", "feature")
+
+	ws, err := PrepareWithBase(root, "acme/web", origin, head, "acme/web#11", "main", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Dir, ".env"), []byte("TOKEN=x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err = PublishFix(ws.Dir, "feature", "main", "leak", PublishLimits{PushEnabled: true})
+	if err == nil || !strings.Contains(err.Error(), "敏感路径") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestPublishFixPushDisabled(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("没有 git")
+	}
+	root := t.TempDir()
+	origin := filepath.Join(root, "origin.git")
+	seed := filepath.Join(root, "seed")
+	run(t, "", "git", "init", "--bare", origin)
+	run(t, "", "git", "clone", origin, seed)
+	run(t, seed, "git", "config", "user.email", "mojo@example.com")
+	run(t, seed, "git", "config", "user.name", "mojo")
+	if err := os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, seed, "git", "add", "a.txt")
+	run(t, seed, "git", "commit", "-m", "init")
+	run(t, seed, "git", "branch", "-M", "main")
+	run(t, seed, "git", "checkout", "-b", "feature")
+	run(t, seed, "git", "commit", "--allow-empty", "-m", "head")
+	head := strings.TrimSpace(run(t, seed, "git", "rev-parse", "HEAD"))
+	base := strings.TrimSpace(run(t, seed, "git", "rev-parse", "main"))
+	run(t, seed, "git", "push", "origin", "main")
+	run(t, seed, "git", "push", "-u", "origin", "feature")
+	ws, err := PrepareWithBase(root, "acme/web", origin, head, "acme/web#12", "main", base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Dir, "a.txt"), []byte("2\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := PublishFix(ws.Dir, "feature", "main", "x", PublishLimits{PushEnabled: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Pushed || got.Skipped == "" {
+		t.Fatalf("got=%+v", got)
 	}
 }

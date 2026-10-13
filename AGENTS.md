@@ -5,7 +5,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 ## 边界
 
 - 默认只审查。不 `gh pr create`，不 `gh pr merge`。
-- `fix` 且 `agent.fix_enabled` 时：模型可改检出内文件；**宿主**负责 `git commit` 与 `git push` 到 PR head（非 force）。仍禁止模型自己调用 terminal/git。
+- `fix` 且 `agent.fix_enabled` 时：模型可改检出内文件；**宿主**在 `fix_push_enabled` 下 commit/push 到 PR head（非 force，有作者/路径/体量门禁）。仍禁止模型自己调用 terminal/git。
 - 模型工具必须落在这次检出里。比较基线是 `refs/review/base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
@@ -16,6 +16,17 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
 - 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
 - 有 `review_note` 时，发出去的正文用笔记拼。不要改回直接发模型自由文本。
+
+## 配置与安全
+
+- `agent.fix_enabled`（默认 false）：是否接受 `@trigger fix`。
+- `agent.fix_push_enabled`（默认跟随 `fix_enabled`）：fix 结束后是否由宿主 commit/push。可显式 `false` 只改工作区。
+- `agent.fix_allowed_authors`：非空时，仅列表内 GitHub login 可触发 fix。
+- `agent.fix_max_changed_files`（默认 40）、`agent.fix_max_diff_bytes`（默认 200000）：单次提交上限。
+- 宿主提交拒绝敏感路径：`.env*`、密钥类扩展名（`.pem`/`.key`/`.jks` 等）、`id_rsa`、`secrets.json`、`.git/` 等。
+- push **非 force**，且拒绝 head==base。
+- 模型侧：review 工具白名单；fix 额外 `file_{read,list,write,patch,mkdir}`；无 terminal/网络/git。
+- webhook：secret 必填；body ≤ 2 MiB；HMAC；`github.repos` 可收窄仓库。
 
 ## 布局
 
@@ -77,7 +88,7 @@ internal/config/config.go    .MojoReviewer/config.json
 5. 会话 cwd 通过 `sdk.Agent.SetSessionWorkingDir` 钉到本次检出。
 
 不要重新 `EnableTool` 打开 `terminal` / 网络 / 桌面控制类工具。新增审查工具时，同步更新 `registerReviewTools` 与对应 allow-list。
-`fix` 结束后宿主调用 `review.PublishFix`：有改动则 commit 并 push 到 `HeadBranch`（拒绝推 base、不做 force）。
+`fix` 结束后宿主调用 `review.PublishFix`：校验敏感路径与体量后，按 `fix_push_enabled` commit/push 到 `HeadBranch`（拒绝推 base、不做 force）。
 
 ## 配置与数据
 

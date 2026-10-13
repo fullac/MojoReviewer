@@ -29,3 +29,8 @@ go run ./cmd/mojoreviewer
 ## License
 
 MIT。见 [LICENSE](LICENSE)。
+
+## 配置要点
+
+`agent.fix_enabled` 默认关闭。开启后可用 `@触发名 fix ...`；宿主按 `fix_push_enabled` 决定是否 commit/push。
+可用 `fix_allowed_authors`、`fix_max_changed_files`、`fix_max_diff_bytes` 收紧门禁；敏感路径不会被提交。

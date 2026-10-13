@@ -150,7 +150,7 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 }
 
 // Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
-// 本阶段只改工作区文件，不 commit、不 push。
+// 模型只改工作区；commit/push 由宿主 PublishFix 按配置执行。
 func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, error) {
 	if r == nil || r.agent == nil {
 		return ReviewResult{}, fmt.Errorf("agent 未启动")
@@ -230,7 +230,7 @@ var reviewToolAllowlist = map[string]struct{}{
 }
 
 // fixToolAllowlist is review tools plus in-checkout file edits for fix mode.
-// Still no terminal/network/git push. Commit/push are host-side later.
+// Still no terminal/network/git. Commit/push are host-side when enabled.
 var fixToolAllowlist = map[string]struct{}{
 	"pr_diff_stat":    {},
 	"pr_file_diff":    {},

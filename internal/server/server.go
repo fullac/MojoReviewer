@@ -143,6 +143,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 			s.runFixUnsupported(item)
 			return
 		}
+		if !fixAuthorAllowed(s.cfg.Agent.FixAllowedAuthors, item.Author) {
+			s.runFixAuthorDenied(item)
+			return
+		}
 		s.runFix(ctx, item)
 		return
 	}
@@ -203,7 +207,11 @@ func (s *Server) runFix(ctx context.Context, item github.Review) {
 	if strings.TrimSpace(body) == "" {
 		body = "fix 会话已结束，但没有返回说明。"
 	}
-	pub, pubErr := review.PublishFix(ws.Dir, item.HeadBranch, item.BaseBranch, publishMessage(item, result.Text))
+	pub, pubErr := review.PublishFix(ws.Dir, item.HeadBranch, item.BaseBranch, publishMessage(item, result.Text), review.PublishLimits{
+		MaxChangedFiles: s.cfg.Agent.FixMaxChangedFiles,
+		MaxDiffBytes:    s.cfg.Agent.FixMaxDiffBytes,
+		PushEnabled:     s.cfg.Agent.FixPushEnabled,
+	})
 	body = "fix 结果：\n\n" + body + "\n\n" + pub.Render()
 	if pubErr != nil {
 		log.Printf("发布修复提交失败 %s: %v", item.SessionKey, pubErr)
@@ -268,6 +276,29 @@ func (s *Server) runRemember(item github.Review) {
 		return
 	}
 	log.Printf("remember 完成 %s", item.SessionKey)
+}
+
+func fixAuthorAllowed(allow []string, author string) bool {
+	if len(allow) == 0 {
+		return true
+	}
+	author = strings.ToLower(strings.TrimSpace(author))
+	author = strings.TrimPrefix(author, "@")
+	for _, a := range allow {
+		if a == author {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) runFixAuthorDenied(item github.Review) {
+	msg := "当前账号无权触发 fix。允许的账号：" + strings.Join(s.cfg.Agent.FixAllowedAuthors, ", ")
+	if err := review.PostComment(item.Repo, item.Number, msg, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 fix 权限拒绝评论失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	log.Printf("fix 作者未授权 %s author=%s", item.SessionKey, item.Author)
 }
 
 func (s *Server) runFixUnsupported(item github.Review) {
