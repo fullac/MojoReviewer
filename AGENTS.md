@@ -10,6 +10,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次。带 @触发用户 的评论可以再审，并续用已有会话。
+- 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（尚未开放，会回复说明）。
 - 自己发出的评论以 `【MojoReviewer】` 开头。解析 webhook 时要跳过，避免自己触发自己。
 - `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
 - 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
@@ -23,6 +24,7 @@ LICENSE                      MIT
 cmd/mojoreviewer/main.go     读配置、把 token 放进 GH_TOKEN、启动 runner 和 HTTP
 internal/server/server.go    POST /webhook/github、GET /health、单个 worker
 internal/github/event.go     pull_request 与 issue_comment 解析，HMAC 校验
+internal/github/intent.go    评论意图：review / fix / remember
 internal/review/workspace.go 克隆、fetch、把 base 固定到 refs/review/base
 internal/review/diff.go      提示词里的整份 diff，上限 120_000 字节
 internal/review/tools.go     检出内的只读工具

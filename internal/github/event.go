@@ -22,8 +22,10 @@ type Review struct {
 	CloneURL   string
 	Author     string
 	HTMLURL    string
-	Comment    string
-	SessionKey string
+	Comment     string
+	Instruction string
+	Intent      Intent
+	SessionKey  string
 }
 
 // ParseWebhook 把 GitHub pull_request 和 issue_comment 转成审查任务。
@@ -68,6 +70,9 @@ func parsePullRequest(body []byte, allowed map[string]bool) (*Review, error) {
 		return nil, nil
 	}
 	review, err := newReview(payload.Repository, payload.PullRequest.Number, payload.PullRequest.Title, payload.PullRequest.Body, payload.PullRequest.User.Login, payload.PullRequest.HTMLURL, payload.PullRequest.Base, payload.PullRequest.Head, allowed)
+	if review != nil {
+		review.Intent = IntentReview
+	}
 	return review, err
 }
 
@@ -110,6 +115,9 @@ func parseComment(body []byte, triggerUser string, allowed map[string]bool) (*Re
 		return review, err
 	}
 	review.Comment = payload.Comment.Body
+	intent, instruction := ParseIntent(payload.Comment.Body, triggerUser)
+	review.Intent = intent
+	review.Instruction = instruction
 	return review, nil
 }
 

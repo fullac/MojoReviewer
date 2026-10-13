@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 
 type reviewRunner interface {
 	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
+	RememberProject(content string) error
 }
 
 // Server 接收 GitHub webhook，串行跑只读审查。
@@ -109,14 +111,34 @@ func (s *Server) worker(ctx context.Context) {
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
-	log.Printf("开始审查 %s", item.SessionKey)
+	if item.Intent == "" {
+		item.Intent = github.IntentReview
+	}
+	log.Printf("开始任务 %s intent=%s", item.SessionKey, item.Intent)
 	if item.Comment != "" {
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
 			s.postFailure(item, "补齐 PR 信息失败", err)
 			return
 		}
+		// ResolveComment 不改 Intent/Instruction/Comment。
+		intent, instruction := item.Intent, item.Instruction
+		comment := item.Comment
 		item = resolved
+		item.Intent = intent
+		if item.Intent == "" {
+			item.Intent = github.IntentReview
+		}
+		item.Instruction = instruction
+		item.Comment = comment
+	}
+	switch item.Intent {
+	case github.IntentRemember:
+		s.runRemember(item)
+		return
+	case github.IntentFix:
+		s.runFixUnsupported(item)
+		return
 	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
@@ -151,6 +173,37 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	}
 	log.Printf("审查完成 %s", item.SessionKey)
 }
+
+func (s *Server) runRemember(item github.Review) {
+	note := strings.TrimSpace(item.Instruction)
+	if note == "" {
+		_ = review.PostComment(item.Repo, item.Number, "没有可记住的内容。用法：`@"+strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")+" remember <事实>`", s.cfg.GitHub.Host)
+		return
+	}
+	content := fmt.Sprintf("仓库 %s 的人工补充记忆：%s", item.Repo, note)
+	if err := s.runner.RememberProject(content); err != nil {
+		log.Printf("remember 失败 %s: %v", item.SessionKey, err)
+		s.postFailure(item, "写入项目记忆失败", err)
+		return
+	}
+	if err := review.PostComment(item.Repo, item.Number, "已记住：\n"+note, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 remember 确认失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	log.Printf("remember 完成 %s", item.SessionKey)
+}
+
+func (s *Server) runFixUnsupported(item github.Review) {
+	user := strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")
+	msg := "fix 模式尚未开放。当前只支持只读 review，以及 `remember` 写入项目记忆。\n" +
+		"可用：`@" + user + " review ...` / `@" + user + " remember ...`"
+	if err := review.PostComment(item.Repo, item.Number, msg, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 fix 提示失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	log.Printf("fix 暂未开放，已回复 %s", item.SessionKey)
+}
+
 
 func (s *Server) postFailure(item github.Review, stage string, err error) {
 	log.Printf("%s %s: %v", stage, item.SessionKey, err)

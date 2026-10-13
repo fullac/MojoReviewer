@@ -22,12 +22,18 @@ import (
 )
 
 type recordingRunner struct {
-	inputs []agent.ReviewInput
+	inputs    []agent.ReviewInput
+	remembers []string
 }
 
 func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
 	r.inputs = append(r.inputs, input)
 	return agent.ReviewResult{SessionID: "existing-session", Text: "审查完成"}, nil
+}
+
+func (r *recordingRunner) RememberProject(content string) error {
+	r.remembers = append(r.remembers, content)
+	return nil
 }
 
 func testServer(t *testing.T, response, failure string) (*Server, *recordingRunner, string, string) {
@@ -233,3 +239,58 @@ func TestPublicFailureRedactsOperationalDetail(t *testing.T) {
 		}
 	}
 }
+
+func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
+	s, runner, _, commentPath := testServer(t, `{"number":7,"title":"t","body":"","user":{"login":"a"},"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///tmp"}},"head":{"ref":"f","sha":"head"}}`, "")
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo remember 基线用 refs/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
+	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
+	_, _ = mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issue_comment")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	s.handleWebhook(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("未入队: %d %s", w.Code, w.Body.String())
+	}
+	item := <-s.jobs
+	if item.Intent != github.IntentRemember {
+		t.Fatalf("intent=%s", item.Intent)
+	}
+	s.runOne(context.Background(), item)
+	if len(runner.inputs) != 0 {
+		t.Fatal("remember 不应进入审查")
+	}
+	if len(runner.remembers) != 1 || !strings.Contains(runner.remembers[0], "基线用 refs/review/base") {
+		t.Fatalf("未写入记忆: %#v", runner.remembers)
+	}
+	comment, err := os.ReadFile(commentPath)
+	if err != nil || !strings.Contains(string(comment), "已记住") {
+		t.Fatalf("未确认 remember: %s %v", comment, err)
+	}
+}
+
+func TestFixIntentRepliesUnsupported(t *testing.T) {
+	s, runner, _, commentPath := testServer(t, `{"number":7,"title":"t","body":"","user":{"login":"a"},"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///tmp"}},"head":{"ref":"f","sha":"head"}}`, "")
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo fix 改超时","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
+	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
+	_, _ = mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issue_comment")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	s.handleWebhook(w, req)
+	item := <-s.jobs
+	if item.Intent != github.IntentFix {
+		t.Fatalf("intent=%s", item.Intent)
+	}
+	s.runOne(context.Background(), item)
+	if len(runner.inputs) != 0 || len(runner.remembers) != 0 {
+		t.Fatal("fix 不应审查或写记忆")
+	}
+	comment, err := os.ReadFile(commentPath)
+	if err != nil || !strings.Contains(string(comment), "fix 模式尚未开放") {
+		t.Fatalf("未提示 fix 未开放: %s %v", comment, err)
+	}
+}
+

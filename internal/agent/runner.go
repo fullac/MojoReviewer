@@ -57,6 +57,19 @@ func (r *Runner) AttachProjectMemory(store *projectmem.Store) {
 	r.memory = &projectmem.Indexer{Agent: r.agent, Store: store}
 }
 
+
+// RememberProject 把人工补充事实写入长期项目记忆。
+func (r *Runner) RememberProject(content string) error {
+	if r == nil || r.agent == nil {
+		return fmt.Errorf("agent 未启动")
+	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return fmt.Errorf("记忆内容为空")
+	}
+	return r.agent.RememberLongTerm(content, "project")
+}
+
 // ProjectMemory 返回已挂载的索引器，供测试或诊断。
 func (r *Runner) ProjectMemory() *projectmem.Indexer {
 	if r == nil {
@@ -195,14 +208,21 @@ func setSessionWorkingDir(agent *sdk.Agent, sessionID, dir string) error {
 	return nil
 }
 
+func reviewNote(item github.Review) string {
+	if s := strings.TrimSpace(item.Instruction); s != "" {
+		return s
+	}
+	return strings.TrimSpace(item.Comment)
+}
+
 func prompt(input ReviewInput) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "请只读审查这个 GitHub PR，并用中文给出结论。\n\n")
 	fmt.Fprintf(&b, "仓库绝对路径：%s\n", input.WorkDir)
 	fmt.Fprintf(&b, "仓库：%s\nPR：#%d %s\n", input.Review.Repo, input.Review.Number, input.Review.Title)
 	fmt.Fprintf(&b, "分支：%s → %s\n提交：%s\n", input.Review.HeadBranch, input.Review.BaseBranch, input.Review.HeadSHA)
-	if input.Review.Comment != "" {
-		fmt.Fprintf(&b, "\n用户补充要求：\n%s\n", input.Review.Comment)
+	if note := reviewNote(input.Review); note != "" {
+		fmt.Fprintf(&b, "\n用户补充要求：\n%s\n", note)
 	}
 	if mem := strings.TrimSpace(input.Memory.Render()); mem != "" {
 		fmt.Fprintf(&b, "\n%s\n", mem)
