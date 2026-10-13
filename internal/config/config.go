@@ -60,6 +60,9 @@ type AgentConfig struct {
 	APIBase     string
 	TaskTimeout time.Duration
 	HomeDir     string
+	// FixEnabled 允许 @trigger fix 进入可写会话（改检出内文件）。
+	// 默认 false。开启后仍不自动 commit/push；那是后续步骤。
+	FixEnabled bool
 }
 
 type fileConfig struct {
@@ -83,6 +86,7 @@ type fileConfig struct {
 		APIBase     string `json:"api_base"`
 		TaskTimeout string `json:"task_timeout"`
 		HomeDir     string `json:"home_dir"`
+		FixEnabled  bool   `json:"fix_enabled"`
 	} `json:"agent"`
 }
 
@@ -140,6 +144,7 @@ func normalize(file fileConfig) (Config, error) {
 			APIBase:     strings.TrimSpace(file.Agent.APIBase),
 			TaskTimeout: timeout,
 			HomeDir:     agentHome,
+			FixEnabled:  file.Agent.FixEnabled,
 		},
 	}
 	if cfg.Server.Port == 0 {

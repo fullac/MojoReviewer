@@ -58,7 +58,6 @@ func TestArgHelpers(t *testing.T) {
 	}
 }
 
-
 func TestLockToolsToReviewOnly(t *testing.T) {
 	home := t.TempDir()
 	auto := true
@@ -135,5 +134,73 @@ func TestSetSessionWorkingDir(t *testing.T) {
 	}
 	if got := sess.GetCwd(); got != dir {
 		t.Fatalf("cwd = %q, want %q", got, dir)
+	}
+}
+
+func TestLockToolsToFixMode(t *testing.T) {
+	home := t.TempDir()
+	auto := true
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:      home,
+		Provider:     "openai",
+		Model:        "gpt-test",
+		APIKey:       "sk-test",
+		SystemPrompt: "test",
+		AutoApprove:  &auto,
+		DisableTools: bootstrapDisableTools,
+	})
+	if err != nil {
+		t.Fatalf("sdk.New: %v", err)
+	}
+	defer agent.Close()
+
+	notes := &review.Notes{}
+	scope := review.ToolScope{Dir: t.TempDir()}
+	if err := registerReviewTools(agent, scope, notes); err != nil {
+		t.Fatalf("registerReviewTools: %v", err)
+	}
+	if err := lockToolsToFixMode(agent); err != nil {
+		t.Fatalf("lockToolsToFixMode: %v", err)
+	}
+	enabled := map[string]bool{}
+	for _, info := range agent.ListTools() {
+		enabled[info.Name] = info.Enabled
+	}
+	for name := range fixToolAllowlist {
+		if !enabled[name] {
+			t.Fatalf("fix 工具应启用: %s", name)
+		}
+	}
+	for _, name := range []string{"terminal", "web_fetch", "computer_act", "autonomy"} {
+		if enabled[name] {
+			t.Fatalf("危险工具不应启用: %s", name)
+		}
+	}
+}
+
+func TestFixPrompt(t *testing.T) {
+	got := fixPrompt(ReviewInput{
+		Review: github.Review{
+			Repo: "acme/web", Number: 1, Title: "t",
+			BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head",
+			Instruction: "改超时",
+		},
+		WorkDir: "/tmp/review",
+		Diff:    "diff",
+	})
+	for _, want := range []string{"file_patch", "file_write", "不要 git commit", "改超时", "refs/review/base"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fix 提示缺少 %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunnerFixEnabledFlag(t *testing.T) {
+	r := &Runner{fixEnabled: true}
+	if !r.FixEnabled() {
+		t.Fatal("expected enabled")
+	}
+	if (&Runner{}).FixEnabled() {
+		t.Fatal("default false")
 	}
 }

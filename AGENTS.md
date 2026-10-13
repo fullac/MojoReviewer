@@ -10,7 +10,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次。带 @触发用户 的评论可以再审，并续用已有会话。
-- 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（尚未开放，会回复说明）。
+- 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；可写工作区，仍不自动 commit/push）。
 - 自己发出的评论以 `【MojoReviewer】` 开头。解析 webhook 时要跳过，避免自己触发自己。
 - `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
 - 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
@@ -71,9 +71,11 @@ internal/config/config.go    .MojoReviewer/config.json
 1. `sdk.New` 时用 `bootstrapDisableTools` 先关掉明显危险的内置工具。
 2. `registerReviewTools` 挂上这 7 个审查工具。
 3. `lockToolsToReviewOnly` 再把 **不在** `reviewToolAllowlist` 里的全部工具 `DisableTool`。
-4. 会话 cwd 通过 `sdk.Agent.SetSessionWorkingDir` 钉到本次检出。
+4. `fix` 且 `agent.fix_enabled` 时走 `lockToolsToFixMode`：在审查工具之外额外启用 `file_read` / `file_list` / `file_write` / `file_patch` / `file_mkdir`。
+5. 会话 cwd 通过 `sdk.Agent.SetSessionWorkingDir` 钉到本次检出。
 
-不要重新 `EnableTool` 打开 `terminal` / `file_read` / 网络类工具。新增审查工具时，同步更新 `registerReviewTools` 和 `reviewToolAllowlist`。
+不要重新 `EnableTool` 打开 `terminal` / 网络 / 桌面控制类工具。新增审查工具时，同步更新 `registerReviewTools` 与对应 allow-list。
+`fix` 改文件后仍由宿主决定是否 commit/push（尚未实现）。
 
 ## 配置与数据
 

@@ -38,6 +38,25 @@ func TestLoadFromHiddenConfig(t *testing.T) {
 	if cfg.Agent.HomeDir != filepath.Join(cfg.DataDir, "luckyagent") {
 		t.Fatalf("HomeDir 应落在数据目录下: %s", cfg.Agent.HomeDir)
 	}
+	if cfg.Agent.FixEnabled {
+		t.Fatal("未配置时 fix_enabled 应为 false")
+	}
+}
+
+func TestLoadFixEnabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {"api_key": "sk-test", "fix_enabled": true}
+	}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixEnabled {
+		t.Fatal("fix_enabled=true 未生效")
+	}
 }
 
 func TestLoadRejectsMissingSecret(t *testing.T) {

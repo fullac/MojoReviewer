@@ -22,8 +22,10 @@ import (
 )
 
 type recordingRunner struct {
-	inputs    []agent.ReviewInput
-	remembers []string
+	inputs     []agent.ReviewInput
+	fixInputs  []agent.ReviewInput
+	remembers  []string
+	fixEnabled bool
 }
 
 func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
@@ -31,9 +33,18 @@ func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (ag
 	return agent.ReviewResult{SessionID: "existing-session", Text: "审查完成"}, nil
 }
 
+func (r *recordingRunner) Fix(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
+	r.fixInputs = append(r.fixInputs, input)
+	return agent.ReviewResult{SessionID: "fix-session", Text: "已改超时配置"}, nil
+}
+
 func (r *recordingRunner) RememberProject(content string) error {
 	r.remembers = append(r.remembers, content)
 	return nil
+}
+
+func (r *recordingRunner) FixEnabled() bool {
+	return r.fixEnabled
 }
 
 func testServer(t *testing.T, response, failure string) (*Server, *recordingRunner, string, string) {
@@ -289,8 +300,62 @@ func TestFixIntentRepliesUnsupported(t *testing.T) {
 		t.Fatal("fix 不应审查或写记忆")
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "fix 模式尚未开放") {
+	if err != nil || !strings.Contains(string(comment), "fix 模式未启用") {
 		t.Fatalf("未提示 fix 未开放: %s %v", comment, err)
 	}
 }
 
+func TestFixIntentRunsWhenEnabled(t *testing.T) {
+	origin := t.TempDir()
+	runGit(t, origin, "init", "-b", "main")
+	runGit(t, origin, "config", "user.name", "mojo")
+	runGit(t, origin, "config", "user.email", "mojo@example.com")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("before\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "add", "README.md")
+	runGit(t, origin, "commit", "-m", "base")
+	base := runGit(t, origin, "rev-parse", "HEAD")
+	runGit(t, origin, "switch", "-c", "feature")
+	if err := os.WriteFile(filepath.Join(origin, "README.md"), []byte("after\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "commit", "-am", "head")
+	head := runGit(t, origin, "rev-parse", "HEAD")
+	payload, err := json.Marshal(map[string]any{
+		"number": 7, "title": "最新标题", "body": "PR 说明", "user": map[string]string{"login": "author"},
+		"base": map[string]any{"ref": "main", "sha": base, "repo": map[string]string{"full_name": "acme/web", "clone_url": "file://" + origin}},
+		"head": map[string]string{"ref": "feature", "sha": head},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, runner, _, commentPath := testServer(t, string(payload), "")
+	runner.fixEnabled = true
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo fix 改超时","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
+	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
+	_, _ = mac.Write([]byte(body))
+	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
+	req.Header.Set("X-GitHub-Event", "issue_comment")
+	req.Header.Set("X-Hub-Signature-256", "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	w := httptest.NewRecorder()
+	s.handleWebhook(w, req)
+	item := <-s.jobs
+	if item.Intent != github.IntentFix {
+		t.Fatalf("intent=%s", item.Intent)
+	}
+	s.runOne(context.Background(), item)
+	if len(runner.inputs) != 0 {
+		t.Fatal("fix 不应走 Review")
+	}
+	if len(runner.fixInputs) != 1 {
+		t.Fatalf("fix 未调用: %#v", runner.fixInputs)
+	}
+	if runner.fixInputs[0].Review.Instruction != "改超时" {
+		t.Fatalf("instruction=%q", runner.fixInputs[0].Review.Instruction)
+	}
+	comment, err := os.ReadFile(commentPath)
+	if err != nil || !strings.Contains(string(comment), "fix 模式") || !strings.Contains(string(comment), "已改超时配置") {
+		t.Fatalf("未发布 fix 结果: %s %v", comment, err)
+	}
+}

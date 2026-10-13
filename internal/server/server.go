@@ -19,7 +19,9 @@ import (
 
 type reviewRunner interface {
 	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
+	Fix(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
 	RememberProject(content string) error
+	FixEnabled() bool
 }
 
 // Server 接收 GitHub webhook，串行跑只读审查。
@@ -137,22 +139,23 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		s.runRemember(item)
 		return
 	case github.IntentFix:
-		s.runFixUnsupported(item)
+		if !s.runner.FixEnabled() {
+			s.runFixUnsupported(item)
+			return
+		}
+		s.runFix(ctx, item)
 		return
 	}
+	s.runReview(ctx, item)
+}
+
+func (s *Server) runReview(ctx context.Context, item github.Review) {
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	diffText := "（评论触发，沿用会话中的仓库上下文。请在仓库绝对路径内自行查看 diff。）"
-	if item.BaseSHA != "" && item.HeadSHA != "" {
-		diffText, err = review.Diff(ws.Dir, item.BaseSHA)
-		if err != nil {
-			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
-			diffText = "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
-		}
-	}
+	diffText := s.diffText(item, ws.Dir)
 	existing, _ := s.store.Get(item.SessionKey)
 	result, err := s.runner.Review(ctx, agent.ReviewInput{
 		Review:    item,
@@ -172,6 +175,53 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		return
 	}
 	log.Printf("审查完成 %s", item.SessionKey)
+}
+
+func (s *Server) runFix(ctx context.Context, item github.Review) {
+	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	if err != nil {
+		s.postFailure(item, "准备仓库失败", err)
+		return
+	}
+	diffText := s.diffText(item, ws.Dir)
+	existing, _ := s.store.Get(item.SessionKey)
+	result, err := s.runner.Fix(ctx, agent.ReviewInput{
+		Review:    item,
+		WorkDir:   ws.Dir,
+		Diff:      diffText,
+		SessionID: existing.SessionID,
+	})
+	if result.SessionID != "" {
+		_ = s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID})
+	}
+	if err != nil {
+		log.Printf("修复失败 %s: %v", item.SessionKey, err)
+		s.postFailure(item, "修复失败", err)
+		return
+	}
+	body := result.Text
+	if strings.TrimSpace(body) == "" {
+		body = "fix 会话已结束，但没有返回说明。"
+	}
+	body = "fix 模式（仅改工作区，尚未 commit/push）：\n\n" + body
+	if err := review.PostComment(item.Repo, item.Number, body, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布修复评论失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	log.Printf("修复完成 %s", item.SessionKey)
+}
+
+func (s *Server) diffText(item github.Review, dir string) string {
+	diffText := "（评论触发，沿用会话中的仓库上下文。请在仓库绝对路径内自行查看 diff。）"
+	if item.BaseSHA != "" && item.HeadSHA != "" {
+		text, err := review.Diff(dir, item.BaseSHA)
+		if err != nil {
+			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
+			return "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
+		}
+		return text
+	}
+	return diffText
 }
 
 func (s *Server) runRemember(item github.Review) {
@@ -195,7 +245,7 @@ func (s *Server) runRemember(item github.Review) {
 
 func (s *Server) runFixUnsupported(item github.Review) {
 	user := strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")
-	msg := "fix 模式尚未开放。当前只支持只读 review，以及 `remember` 写入项目记忆。\n" +
+	msg := "fix 模式未启用。请在配置里打开 `agent.fix_enabled`，或改用只读 review / remember。\n" +
 		"可用：`@" + user + " review ...` / `@" + user + " remember ...`"
 	if err := review.PostComment(item.Repo, item.Number, msg, s.cfg.GitHub.Host); err != nil {
 		log.Printf("发布 fix 提示失败 %s: %v", item.SessionKey, err)
@@ -203,7 +253,6 @@ func (s *Server) runFixUnsupported(item github.Review) {
 	}
 	log.Printf("fix 暂未开放，已回复 %s", item.SessionKey)
 }
-
 
 func (s *Server) postFailure(item github.Review, stage string, err error) {
 	log.Printf("%s %s: %v", stage, item.SessionKey, err)

@@ -15,9 +15,10 @@ import (
 
 // Runner 在进程内跑一个 LuckyAgent，全局只用一个模型。
 type Runner struct {
-	agent   *sdk.Agent
-	timeout time.Duration
-	memory  *projectmem.Indexer
+	agent      *sdk.Agent
+	timeout    time.Duration
+	memory     *projectmem.Indexer
+	fixEnabled bool
 }
 
 // New 启动嵌入式 LuckyAgent。HomeDir 必须是本服务自己的目录。
@@ -38,7 +39,12 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{agent: agent, timeout: cfg.TaskTimeout}, nil
+	return &Runner{agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
+}
+
+// FixEnabled 报告进程是否允许 fix 可写会话。
+func (r *Runner) FixEnabled() bool {
+	return r != nil && r.fixEnabled
 }
 
 // Close 关闭运行时。
@@ -56,7 +62,6 @@ func (r *Runner) AttachProjectMemory(store *projectmem.Store) {
 	}
 	r.memory = &projectmem.Indexer{Agent: r.agent, Store: store}
 }
-
 
 // RememberProject 把人工补充事实写入长期项目记忆。
 func (r *Runner) RememberProject(content string) error {
@@ -144,6 +149,58 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	return result, nil
 }
 
+// Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
+// 本阶段只改工作区文件，不 commit、不 push。
+func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, error) {
+	if r == nil || r.agent == nil {
+		return ReviewResult{}, fmt.Errorf("agent 未启动")
+	}
+	if !r.fixEnabled {
+		return ReviewResult{}, fmt.Errorf("fix 模式未启用")
+	}
+	if strings.TrimSpace(input.WorkDir) == "" {
+		return ReviewResult{}, fmt.Errorf("工作目录为空")
+	}
+	timeout := r.timeout
+	if timeout <= 0 {
+		timeout = 20 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	sessionID := strings.TrimSpace(input.SessionID)
+	var err error
+	if sessionID == "" {
+		sessionID, err = r.agent.NewSessionWithTitle(input.Review.SessionKey + ":fix")
+		if err != nil {
+			return ReviewResult{}, err
+		}
+	}
+	if err := setSessionWorkingDir(r.agent, sessionID, input.WorkDir); err != nil {
+		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置修复工作目录: %w", err)
+	}
+	if r.memory != nil {
+		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
+		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
+	}
+	notes := &review.Notes{}
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
+		return ReviewResult{SessionID: sessionID}, err
+	}
+	if err := lockToolsToFixMode(r.agent); err != nil {
+		return ReviewResult{SessionID: sessionID}, err
+	}
+	text, err := r.agent.ChatSession(ctx, sessionID, fixPrompt(input))
+	if err != nil {
+		return ReviewResult{SessionID: sessionID}, err
+	}
+	result := ReviewResult{SessionID: sessionID, Text: strings.TrimSpace(text)}
+	if notes.Len() > 0 {
+		result.Text = notes.Render()
+		result.Noted = true
+	}
+	return result, nil
+}
 
 // bootstrapDisableTools is the minimum deny-list applied at sdk.New.
 // The real restriction is lockToolsToReviewOnly after review tools are registered.
@@ -172,17 +229,43 @@ var reviewToolAllowlist = map[string]struct{}{
 	"review_note":     {},
 }
 
+// fixToolAllowlist is review tools plus in-checkout file edits for fix mode.
+// Still no terminal/network/git push. Commit/push are host-side later.
+var fixToolAllowlist = map[string]struct{}{
+	"pr_diff_stat":    {},
+	"pr_file_diff":    {},
+	"read_repo_file":  {},
+	"repo_grep":       {},
+	"changed_symbols": {},
+	"tests_around":    {},
+	"review_note":     {},
+	"file_read":       {},
+	"file_list":       {},
+	"file_write":      {},
+	"file_patch":      {},
+	"file_mkdir":      {},
+}
+
 // lockToolsToReviewOnly disables every registered tool outside the review allow-list.
 // Review tools stay enabled; unknown future builtins are denied by default.
 func lockToolsToReviewOnly(agent *sdk.Agent) error {
+	return lockToolsToAllowlist(agent, reviewToolAllowlist, "审查")
+}
+
+// lockToolsToFixMode enables review + file edit tools; everything else stays off.
+func lockToolsToFixMode(agent *sdk.Agent) error {
+	return lockToolsToAllowlist(agent, fixToolAllowlist, "修复")
+}
+
+func lockToolsToAllowlist(agent *sdk.Agent, allow map[string]struct{}, label string) error {
 	if agent == nil {
 		return fmt.Errorf("agent 为空")
 	}
 	for _, info := range agent.ListTools() {
-		if _, ok := reviewToolAllowlist[info.Name]; ok {
+		if _, ok := allow[info.Name]; ok {
 			if !info.Enabled {
 				if err := agent.EnableTool(info.Name); err != nil {
-					return fmt.Errorf("启用审查工具 %s: %w", info.Name, err)
+					return fmt.Errorf("启用%s工具 %s: %w", label, info.Name, err)
 				}
 			}
 			continue
@@ -240,11 +323,38 @@ func prompt(input ReviewInput) string {
 	return b.String()
 }
 
+func fixPrompt(input ReviewInput) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "请按用户要求修改这个 GitHub PR 的工作区代码，并用中文说明改了什么。\n\n")
+	fmt.Fprintf(&b, "仓库绝对路径：%s\n", input.WorkDir)
+	fmt.Fprintf(&b, "仓库：%s\nPR：#%d %s\n", input.Review.Repo, input.Review.Number, input.Review.Title)
+	fmt.Fprintf(&b, "分支：%s → %s\n提交：%s\n", input.Review.HeadBranch, input.Review.BaseBranch, input.Review.HeadSHA)
+	if note := reviewNote(input.Review); note != "" {
+		fmt.Fprintf(&b, "\n用户修复要求：\n%s\n", note)
+	}
+	if mem := strings.TrimSpace(input.Memory.Render()); mem != "" {
+		fmt.Fprintf(&b, "\n%s\n", mem)
+	}
+	fmt.Fprintf(&b, "\n已准备的 diff，可能被截断：\n```\n%s\n```\n\n", input.Diff)
+	b.WriteString("可用工具：\n")
+	b.WriteString("1. 先用 pr_diff_stat / pr_file_diff / read_repo_file / repo_grep 弄清现状。\n")
+	b.WriteString("2. 用 file_patch 或 file_write 只改本次检出内的文件；路径不要超出工作区，不要用 ..。\n")
+	b.WriteString("3. 需要时可 file_list / file_mkdir。不要调用 terminal，不要访问网络。\n")
+	b.WriteString("4. 不要 git commit、不要 git push、不要创建或合并 PR。宿主会在后续步骤处理提交。\n")
+	b.WriteString("5. 改完后用中文总结：改了哪些文件、解决了什么；仍有风险用 review_note 记下来。\n\n")
+	b.WriteString("规则：\n")
+	b.WriteString("1. 工作区是 detached checkout，可能是 shallow。比较基线用 refs/review/base。\n")
+	b.WriteString("2. 只做用户要求范围内的最小改动。\n")
+	return b.String()
+}
+
 const systemPrompt = `# SOUL
 
-你是 MojoReviewer，只负责审查 GitHub Pull Request。
+你是 MojoReviewer，负责审查 GitHub Pull Request；在配置开启时也可按评论进入 fix 可写会话。
 
-使用中文。只阅读代码和 diff，不修改仓库，不推送，不创建或合并 PR。
+使用中文。
+默认审查：只阅读代码和 diff，不修改仓库，不推送，不创建或合并 PR。
 优先使用 pr_diff_stat、pr_file_diff、read_repo_file、repo_grep、changed_symbols、tests_around、review_note。
+fix 会话额外可用 file_read、file_list、file_write、file_patch、file_mkdir；仍然不要用 terminal，不要网络，不要自行 commit/push。
 这些工具的范围限定在本次检出内。
 `
