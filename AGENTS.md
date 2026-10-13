@@ -31,6 +31,7 @@ internal/review/comment.go   gh pr comment
 internal/agent/runner.go     sdk.New、会话、提示词
 internal/agent/register.go   每次审查重新绑定那 7 个工具
 internal/store/store.go      data_dir/reviews.json，记 head SHA 和 session ID
+internal/projectmem/         项目记忆：选文档、增量索引、审查前提示注入
 internal/config/config.go    .MojoReviewer/config.json
 ```
 
@@ -43,8 +44,9 @@ internal/config/config.go    .MojoReviewer/config.json
 3. `github.repos` 非空时，仓库不在名单里就忽略。
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，并把 base SHA 抓到 `refs/review/base`。
 5. `review.Diff` 生成提示词里的 diff。超长就截断，后面的文件靠 `pr_file_diff` 补。
-6. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
-7. `review.PostComment` 发回 PR。
+6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
+7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
+8. `review.PostComment` 发回 PR。
 
 ## 模型工具
 
@@ -67,7 +69,7 @@ internal/config/config.go    .MojoReviewer/config.json
 1. `sdk.New` 时用 `bootstrapDisableTools` 先关掉明显危险的内置工具。
 2. `registerReviewTools` 挂上这 7 个审查工具。
 3. `lockToolsToReviewOnly` 再把 **不在** `reviewToolAllowlist` 里的全部工具 `DisableTool`。
-4. 会话 cwd 通过 `setSessionWorkingDir` 钉到本次检出（SDK 尚无 `SetSessionWorkingDir`）。
+4. 会话 cwd 通过 `sdk.Agent.SetSessionWorkingDir` 钉到本次检出。
 
 不要重新 `EnableTool` 打开 `terminal` / `file_read` / 网络类工具。新增审查工具时，同步更新 `registerReviewTools` 和 `reviewToolAllowlist`。
 
@@ -77,7 +79,7 @@ internal/config/config.go    .MojoReviewer/config.json
 
 缺 `agent.api_key` 或 `github.webhook_secret` 时进程拒绝启动。`github.token` 在 `GH_TOKEN` 为空时写入环境，给 `git` 和 `gh` 用。
 
-`data_dir` 默认 `~/.mojoreviewer`。LuckyAgent 家目录是其中的 `luckyagent/`，不读写 `~/.luckyagent`。审查记录在 `reviews.json`，权限 `0600`。
+`data_dir` 默认 `~/.mojoreviewer`。LuckyAgent 家目录是其中的 `luckyagent/`，不读写 `~/.luckyagent`。审查记录在 `reviews.json`，项目记忆元数据在 `project_memory.json`，权限都是 `0600`。RAG 与长期记忆落在 `luckyagent/` 内，按仓库隔离 source 前缀 `repo:<owner/name>:`。
 
 监听默认 `127.0.0.1:9968`。本机入口是 `go run ./cmd/mojoreviewer`。
 

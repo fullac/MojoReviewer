@@ -2,7 +2,7 @@
 
 用 LuckyAgent 公开 SDK 做 GitHub Pull Request 只读审查。
 
-它接收 GitHub webhook，把 PR 克隆到本机，再把仓库路径、截断后的 diff 和一组检出内只读工具交给进程内的 LuckyAgent。服务再用 `gh` 把结论文字发回 PR。它不修改文件，不提交，不推送，不创建或合并 PR。
+它接收 GitHub webhook，把 PR 克隆到本机，再把仓库路径、截断后的 diff 和一组检出内只读工具交给进程内的 LuckyAgent。服务会把仓库里的高信号文档（如 README、AGENTS.md、docs）增量写入隔离的项目记忆，并在审查前提取相关片段。服务再用 `gh` 把结论文字发回 PR。它不修改文件，不提交，不推送，不创建或合并 PR。
 
 ## 运行
 
@@ -16,7 +16,7 @@ go run ./cmd/mojoreviewer
 
 评论触发的任务开始执行时，会用 `gh api` 查询 PR 的最新 head SHA、base ref/SHA 和仓库克隆地址，再准备检出和 diff，并复用已有会话。查询 PR 信息或准备仓库失败时，会把归类后的原因作为 `【MojoReviewer】` 评论发回 PR，不附带命令输出、本地路径或令牌；完整错误只写日志。评论发布失败也只记录日志。
 
-`data_dir` 为空时数据放在 `~/.mojoreviewer`。LuckyAgent 使用其中单独的 `luckyagent` 目录，不读写 `~/.luckyagent`。`agent.home_dir` 可以改掉这个位置。
+`data_dir` 为空时数据放在 `~/.mojoreviewer`。LuckyAgent 使用其中单独的 `luckyagent` 目录，不读写 `~/.luckyagent`。`agent.home_dir` 可以改掉这个位置。项目记忆元数据在 `project_memory.json`；向量索引与长期记忆在 `luckyagent/` 内。
 
 ## 限制
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent/sdk"
 )
@@ -16,6 +17,7 @@ import (
 type Runner struct {
 	agent   *sdk.Agent
 	timeout time.Duration
+	memory  *projectmem.Indexer
 }
 
 // New 启动嵌入式 LuckyAgent。HomeDir 必须是本服务自己的目录。
@@ -47,12 +49,29 @@ func (r *Runner) Close() error {
 	return r.agent.Close()
 }
 
+// AttachProjectMemory 挂上项目记忆索引器。可在 New 之后调用。
+func (r *Runner) AttachProjectMemory(store *projectmem.Store) {
+	if r == nil || r.agent == nil || store == nil {
+		return
+	}
+	r.memory = &projectmem.Indexer{Agent: r.agent, Store: store}
+}
+
+// ProjectMemory 返回已挂载的索引器，供测试或诊断。
+func (r *Runner) ProjectMemory() *projectmem.Indexer {
+	if r == nil {
+		return nil
+	}
+	return r.memory
+}
+
 // ReviewInput 是一次只读审查需要的事实。
 type ReviewInput struct {
 	Review    github.Review
 	WorkDir   string
 	Diff      string
 	SessionID string
+	Memory    projectmem.ContextBundle
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
@@ -88,6 +107,10 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	}
 	if err := setSessionWorkingDir(r.agent, sessionID, input.WorkDir); err != nil {
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
+	}
+	if r.memory != nil {
+		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
+		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
 	}
 	notes := &review.Notes{}
 	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
@@ -162,29 +185,14 @@ func lockToolsToReviewOnly(agent *sdk.Agent) error {
 }
 
 // setSessionWorkingDir pins the review session cwd to the checkout.
-// LuckyAgent SDK has no SetSessionWorkingDir yet; use the underlying session API.
 func setSessionWorkingDir(agent *sdk.Agent, sessionID, dir string) error {
 	if agent == nil {
 		return fmt.Errorf("agent 为空")
 	}
-	sessionID = strings.TrimSpace(sessionID)
-	dir = strings.TrimSpace(dir)
-	if sessionID == "" {
-		return fmt.Errorf("session id 为空")
+	if err := agent.SetSessionWorkingDir(sessionID, dir); err != nil {
+		return err
 	}
-	if dir == "" {
-		return fmt.Errorf("工作目录为空")
-	}
-	inner := agent.Underlying()
-	if inner == nil {
-		return fmt.Errorf("underlying agent 不可用")
-	}
-	sess, ok := inner.Sessions().Get(sessionID)
-	if !ok || sess == nil {
-		return fmt.Errorf("session %q 不存在", sessionID)
-	}
-	sess.SetCwd(dir)
-	return sess.Save()
+	return nil
 }
 
 func prompt(input ReviewInput) string {
@@ -195,6 +203,9 @@ func prompt(input ReviewInput) string {
 	fmt.Fprintf(&b, "分支：%s → %s\n提交：%s\n", input.Review.HeadBranch, input.Review.BaseBranch, input.Review.HeadSHA)
 	if input.Review.Comment != "" {
 		fmt.Fprintf(&b, "\n用户补充要求：\n%s\n", input.Review.Comment)
+	}
+	if mem := strings.TrimSpace(input.Memory.Render()); mem != "" {
+		fmt.Fprintf(&b, "\n%s\n", mem)
 	}
 	fmt.Fprintf(&b, "\n已准备的 diff，可能被截断：\n```\n%s\n```\n\n", input.Diff)
 	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")

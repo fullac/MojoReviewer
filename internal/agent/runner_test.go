@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent/sdk"
 )
@@ -14,6 +15,10 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		Review:  github.Review{Repo: "acme/web", Number: 1, BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head"},
 		WorkDir: "/tmp/review",
 		Diff:    "diff",
+		Memory: projectmem.ContextBundle{
+			Memories: []string{"仓库约定：比较基线用 refs/review/base"},
+			RAGHits:  []string{"[AGENTS.md] 只审查，不改仓库"},
+		},
 	})
 	for _, want := range []string{
 		"pr_diff_stat",
@@ -27,6 +32,9 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		"shallow",
 		"refs/review/base",
 		"git diff main...HEAD",
+		"项目记忆",
+		"refs/review/base",
+		"只审查，不改仓库",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("提示缺少 %q:\n%s", want, got)
