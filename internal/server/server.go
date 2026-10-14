@@ -224,13 +224,12 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	diffText := s.diffText(item, ws.Dir)
 	existing, _ := s.store.Get(item.SessionKey)
 	activity.Stage = "model"
+	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
 	result, err := s.runner.Review(ctx, agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
-		Diff:      diffText,
 		SessionID: existing.SessionID,
 	})
 	if result.SessionID != "" {
@@ -258,13 +257,12 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	diffText := s.diffText(item, ws.Dir)
 	existing, _ := s.store.Get(item.SessionKey)
 	a.Stage = "model"
+	// Diff is intentionally empty: the model pulls tools instead of a pinned bulk patch (issue #21).
 	result, err := s.runner.Fix(ctx, agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
-		Diff:      diffText,
 		SessionID: existing.SessionID,
 	})
 	if result.SessionID != "" {
@@ -321,19 +319,6 @@ func publishMessage(item github.Review, agentText string) string {
 		text = text[:i]
 	}
 	return text
-}
-
-func (s *Server) diffText(item github.Review, dir string) string {
-	diffText := "（评论触发，沿用会话中的仓库上下文。请在仓库绝对路径内自行查看 diff。）"
-	if item.BaseSHA != "" && item.HeadSHA != "" {
-		text, err := review.Diff(dir, item.BaseSHA)
-		if err != nil {
-			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
-			return "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
-		}
-		return text
-	}
-	return diffText
 }
 
 func (s *Server) runRemember(item github.Review, a *store.Activity) {

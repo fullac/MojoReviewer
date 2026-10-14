@@ -314,12 +314,15 @@ func prompt(input ReviewInput) string {
 	if mem := strings.TrimSpace(input.Memory.Render()); mem != "" {
 		fmt.Fprintf(&b, "\n%s\n", mem)
 	}
-	fmt.Fprintf(&b, "\n已准备的 diff，可能被截断：\n```\n%s\n```\n\n", input.Diff)
+	// CodeFarmer-style: never pin a full diff into the durable goal/history.
+	// The model must fetch the file map and per-file patches via tools.
+	b.WriteString("\n不要期待提示词里有整份 diff。diff 不会预注入上下文（避免 durable goal 双倍占用预算）。\n")
 	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")
-	b.WriteString("1. pr_diff_stat 看文件地图。truncated 为 true 时，用 pr_file_diff 按文件补读。\n")
-	b.WriteString("2. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
-	b.WriteString("3. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
-	b.WriteString("4. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」。\n\n")
+	b.WriteString("1. 先调用 pr_diff_stat 看文件地图与是否截断。\n")
+	b.WriteString("2. 对重点文件调用 pr_file_diff 按文件读 patch；不要试图一次读完全部 diff。\n")
+	b.WriteString("3. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
+	b.WriteString("4. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
+	b.WriteString("5. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」。\n\n")
 	b.WriteString("规则：\n")
 	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。比较基线用 refs/review/base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
 	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
@@ -339,7 +342,8 @@ func fixPrompt(input ReviewInput) string {
 	if mem := strings.TrimSpace(input.Memory.Render()); mem != "" {
 		fmt.Fprintf(&b, "\n%s\n", mem)
 	}
-	fmt.Fprintf(&b, "\n已准备的 diff，可能被截断：\n```\n%s\n```\n\n", input.Diff)
+	// Same as review: tools pull the map/patch; do not pin a bulk diff into the goal.
+	b.WriteString("\n不要期待提示词里有整份 diff。先用工具弄清现状，再做最小改动。\n")
 	b.WriteString("可用工具：\n")
 	b.WriteString("1. 先用 pr_diff_stat / pr_file_diff / read_repo_file / repo_grep 弄清现状。\n")
 	b.WriteString("2. 用 file_patch 或 file_write 只改本次检出内的文件；路径不要超出工作区，不要用 ..。\n")

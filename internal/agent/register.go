@@ -21,7 +21,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	specs := []sdk.ToolSpec{
 		{
 			Name:         "pr_diff_stat",
-			Description:  "返回本次 PR 相对 refs/review/base 的文件列表和增删行数。truncated 为 true 时，提示词里的整份 diff 已被截断，后面的文件不会出现在提示词中。",
+			Description:  "返回本次 PR 相对 refs/review/base 的文件列表和增删行数。truncated 为 true 时，整份 patch 超过工具侧上限，请用 pr_file_diff 按文件补读。提示词不会预置整份 diff。",
 			Handler:      tools.diffStat,
 			AutoApprove:  true,
 			ParallelSafe: true,

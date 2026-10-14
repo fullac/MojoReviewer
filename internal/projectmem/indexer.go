@@ -114,56 +114,69 @@ type ContextBundle struct {
 }
 
 // LoadContext 在审查前提取与本次 PR 相关的记忆和 RAG 片段。失败返回空包。
+// query 只用 repo + title + 短评论，不用完整 body，避免召回历史审查 prompt（issue #21）。
 func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment string) ContextBundle {
 	out := ContextBundle{}
 	if idx == nil || idx.Agent == nil {
 		return out
 	}
 	repo = strings.TrimSpace(repo)
-	query := strings.TrimSpace(strings.Join([]string{repo, title, body, comment}, " "))
+	title = strings.TrimSpace(title)
+	comment = strings.TrimSpace(comment)
+	// body 保留参数兼容调用方，但不进 query，也不整段注入。
+	_ = body
+	query := strings.TrimSpace(strings.Join([]string{repo, title, clipQuery(comment, 200)}, " "))
 	if query == "" {
 		query = repo
 	}
 	for _, hit := range idx.Agent.Recall(query) {
 		text := strings.TrimSpace(hit.Content)
-		if text == "" {
+		if text == "" || looksLikeReviewPrompt(text) {
 			continue
 		}
 		out.Memories = append(out.Memories, text)
-		if len(out.Memories) >= 5 {
+		if len(out.Memories) >= maxRenderMemories {
 			break
 		}
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	hits, err := idx.Agent.SearchRAG(ctx, query, &sdk.RAGSearchOptions{TopK: 4, MinScore: 0.15})
+	hits, err := idx.Agent.SearchRAG(ctx, query, &sdk.RAGSearchOptions{TopK: maxRenderRAGHits, MinScore: 0.15})
 	if err != nil {
 		log.Printf("项目记忆 RAG 检索跳过 %s: %v", repo, err)
 		return out
 	}
 	for _, hit := range hits {
 		content := strings.TrimSpace(hit.Content)
-		if content == "" {
+		if content == "" || looksLikeReviewPrompt(content) {
 			continue
 		}
 		label := hit.DocTitle
 		if label == "" {
 			label = hit.DocSource
 		}
-		if len(content) > 600 {
-			content = content[:600] + "…"
+		if len(content) > maxMemoryChars {
+			content = content[:maxMemoryChars] + "…"
 		}
 		if label != "" {
 			out.RAGHits = append(out.RAGHits, fmt.Sprintf("[%s] %s", label, content))
 		} else {
 			out.RAGHits = append(out.RAGHits, content)
 		}
-		if len(out.RAGHits) >= 4 {
+		if len(out.RAGHits) >= maxRenderRAGHits {
 			break
 		}
 	}
 	return out
+}
+
+func clipQuery(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if n <= 0 || len(s) <= n {
+		return s
+	}
+	return s[:n]
 }
 
 func ragSource(repo, rel string) string {

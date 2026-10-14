@@ -30,7 +30,7 @@ type ToolScope struct {
 	Dir string
 }
 
-// Stat 是 git diff --numstat。truncated 表示整份 patch 超过提示词上限。
+// Stat 是 git diff --numstat。truncated 表示整份 patch 超过工具侧上限（见 maxDiffBytes）。
 func (s ToolScope) Stat() (string, error) {
 	if err := s.require(); err != nil {
 		return "", err

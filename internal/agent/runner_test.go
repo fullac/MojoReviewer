@@ -14,7 +14,8 @@ func TestPromptUsesReviewTools(t *testing.T) {
 	got := prompt(ReviewInput{
 		Review:  github.Review{Repo: "acme/web", Number: 1, BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head"},
 		WorkDir: "/tmp/review",
-		Diff:    "diff",
+		// Diff must not appear in the prompt even if a caller still fills it.
+		Diff: strings.Repeat("HUGE_DIFF_SHOULD_NOT_APPEAR_", 5000),
 		Memory: projectmem.ContextBundle{
 			Memories: []string{"仓库约定：比较基线用 refs/review/base"},
 			RAGHits:  []string{"[AGENTS.md] 只审查，不改仓库"},
@@ -33,12 +34,20 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		"refs/review/base",
 		"git diff main...HEAD",
 		"项目记忆",
-		"refs/review/base",
 		"只审查，不改仓库",
+		"不要期待提示词里有整份 diff",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("提示缺少 %q:\n%s", want, got)
 		}
+	}
+	for _, bad := range []string{"HUGE_DIFF_SHOULD_NOT_APPEAR_", "已准备的 diff"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("提示不应包含 %q（issue #21）", bad)
+		}
+	}
+	if len(got) > 8000 {
+		t.Fatalf("审查 prompt 过长: %d 字符（不应再钉整份 diff）", len(got))
 	}
 }
 
@@ -186,12 +195,15 @@ func TestFixPrompt(t *testing.T) {
 			Instruction: "改超时",
 		},
 		WorkDir: "/tmp/review",
-		Diff:    "diff",
+		Diff:    strings.Repeat("FIX_DIFF_SHOULD_NOT_APPEAR_", 3000),
 	})
-	for _, want := range []string{"file_patch", "file_write", "宿主提交", "改超时", "refs/review/base"} {
+	for _, want := range []string{"file_patch", "file_write", "宿主", "改超时", "refs/review/base", "不要期待提示词里有整份 diff"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fix 提示缺少 %q:\n%s", want, got)
 		}
+	}
+	if strings.Contains(got, "FIX_DIFF_SHOULD_NOT_APPEAR_") || strings.Contains(got, "已准备的 diff") {
+		t.Fatal("fix 提示不应预置整份 diff（issue #21）")
 	}
 }
 

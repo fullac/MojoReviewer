@@ -39,7 +39,7 @@ internal/github/event.go     pull_request 与 issue_comment 解析，HMAC 校验
 internal/github/intent.go    评论意图：review / fix / remember
 internal/review/workspace.go 克隆、fetch、把 base 固定到 refs/review/base
 internal/review/publish.go   fix 结束后宿主 commit/push 到 PR head
-internal/review/diff.go      提示词里的整份 diff，上限 120_000 字节
+internal/review/diff.go      可选 diff 读取（调试/测试）；审查主路径不再写入 prompt
 internal/review/tools.go     检出内的只读工具
 internal/review/notes.go     严重 / 建议笔记，渲染最终评论
 internal/review/comment.go   gh pr comment
@@ -59,7 +59,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 2. `pull_request` 只收 `opened`、`reopened`、`synchronize`，草稿丢弃。`issue_comment` 只收 PR 上新建的、提到 `github.trigger_user` 的评论。
 3. `github.repos` 非空时，仓库不在名单里就忽略。
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，并把 base SHA 抓到 `refs/review/base`。
-5. `review.Diff` 生成提示词里的 diff。超长就截断，后面的文件靠 `pr_file_diff` 补。
+5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
 7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
 8. `review.PostComment` 发回 PR。
@@ -79,7 +79,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 | 工具 | 作用 |
 | --- | --- |
-| `pr_diff_stat` | 文件列表、增删行数、整份 diff 是否被截断 |
+| `pr_diff_stat` | 文件列表、增删行数、整份 patch 是否超过工具侧上限 |
 | `pr_file_diff` | 单个文件相对 `refs/review/base` 的 patch |
 | `read_repo_file` | 检出内读文件，可带行号 |
 | `repo_grep` | 只在检出内搜索 |
@@ -125,6 +125,6 @@ go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ## 改动时不要做的事
 
 - 不要把审查改成多 worker，除非同时处理会话和检出目录的并发。
-- 不要在提示词里再塞一整份未截断 diff 来绕过工具。
+- 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。

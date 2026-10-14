@@ -6,9 +6,11 @@ import (
 	"strings"
 )
 
-const maxDiffBytes = 120_000
+const maxDiffBytes = 16_000
 
-// Diff 读取当前检出相对 base 的代码差异。失败时返回说明，不让审查因 diff 命令中断。
+// Diff 读取当前检出相对 base 的代码差异（调试/测试用）。
+// 审查主路径不再把返回值写入 prompt；模型应通过 pr_diff_stat / pr_file_diff 按需读取（issue #21）。
+// 失败时返回说明，不让调用方因 diff 命令中断。
 func Diff(dir, baseSHA string) (string, error) {
 	if strings.TrimSpace(baseSHA) == "" {
 		return "", fmt.Errorf("缺少 base SHA")
@@ -34,5 +36,5 @@ func truncate(text string, limit int) string {
 	if len(text) <= limit {
 		return text
 	}
-	return text[:limit] + "\n\n…差异过长，已截断。请在仓库目录内用 file_read 查看具体文件。"
+	return text[:limit] + "\n\n…差异过长，已截断。请用 pr_diff_stat / pr_file_diff 按文件查看。"
 }

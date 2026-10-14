@@ -167,8 +167,14 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/review/base") != base {
 		t.Fatal("没有检出最新 head 或正确 base")
 	}
-	if !strings.Contains(input.Diff, "+after") || !strings.Contains(input.Diff, "-before") {
-		t.Fatalf("没有生成真实 PR diff: %s", input.Diff)
+	// issue #21: bulk diff is no longer preloaded into ReviewInput / prompt.
+	if strings.TrimSpace(input.Diff) != "" {
+		t.Fatalf("不应再预置整份 diff: %q", input.Diff)
+	}
+	// checkout still has the real change for pr_file_diff / tools to read
+	readme, err := os.ReadFile(filepath.Join(input.WorkDir, "README.md"))
+	if err != nil || string(readme) != "after\n" {
+		t.Fatalf("工作区未反映 head 内容: %s %v", readme, err)
 	}
 	rec, ok := s.store.Get("acme/web#7")
 	if !ok || rec.HeadSHA != head || rec.SessionID != "existing-session" {
