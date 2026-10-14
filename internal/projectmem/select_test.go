@@ -33,12 +33,12 @@ func TestSelectKnowledgeFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := map[string]bool{
-		"README.md":                true,
-		"AGENTS.md":                true,
-		"docs/guide.md":            true,
-		"docs/nested/arch.md":      true,
-		".github/CONTRIBUTING.md":  true,
-		"docs/secret-notes.md":     true, // 文件名含 secret：应被跳过
+		"README.md":               true,
+		"AGENTS.md":               true,
+		"docs/guide.md":           true,
+		"docs/nested/arch.md":     true,
+		".github/CONTRIBUTING.md": true,
+		"docs/secret-notes.md":    true, // 文件名含 secret：应被跳过
 	}
 	seen := map[string]bool{}
 	for _, c := range got {

@@ -54,12 +54,14 @@ type GitHubConfig struct {
 
 // AgentConfig 是嵌入的 LuckyAgent。一个进程只用一个模型。
 type AgentConfig struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	APIBase     string
-	TaskTimeout time.Duration
-	HomeDir     string
+	Provider         string
+	Model            string
+	APIKey           string
+	APIBase          string
+	TaskTimeout      time.Duration
+	HomeDir          string
+	MaxContextTokens int
+	RequestTimeout   time.Duration
 	// FixEnabled 允许 @trigger fix 进入可写会话（改检出内文件）。默认 false。
 	FixEnabled bool
 	// FixPushEnabled 允许宿主在 fix 后 commit 并 push 到 PR head。
@@ -99,6 +101,8 @@ type fileConfig struct {
 		FixAllowedAuthors  []string `json:"fix_allowed_authors"`
 		FixMaxChangedFiles int      `json:"fix_max_changed_files"`
 		FixMaxDiffBytes    int      `json:"fix_max_diff_bytes"`
+		MaxContextTokens   int      `json:"max_context_tokens"`
+		RequestTimeout     string   `json:"request_timeout"`
 	} `json:"agent"`
 }
 
@@ -131,6 +135,20 @@ func normalize(file fileConfig) (Config, error) {
 			return Config{}, fmt.Errorf("agent.task_timeout 无效: %s", raw)
 		}
 	}
+	contextTokens := file.Agent.MaxContextTokens
+	if contextTokens == 0 {
+		contextTokens = 40000
+	}
+	if contextTokens < 1000 {
+		return Config{}, fmt.Errorf("agent.max_context_tokens 必须至少为 1000")
+	}
+	requestTimeout := 5 * time.Minute
+	if raw := strings.TrimSpace(file.Agent.RequestTimeout); raw != "" {
+		requestTimeout, err = time.ParseDuration(raw)
+		if err != nil || requestTimeout <= 0 {
+			return Config{}, fmt.Errorf("agent.request_timeout 无效")
+		}
+	}
 	agentHome := strings.TrimSpace(file.Agent.HomeDir)
 	if agentHome == "" {
 		agentHome = filepath.Join(dataDir, "luckyagent")
@@ -156,6 +174,8 @@ func normalize(file fileConfig) (Config, error) {
 			APIBase:            strings.TrimSpace(file.Agent.APIBase),
 			TaskTimeout:        timeout,
 			HomeDir:            agentHome,
+			MaxContextTokens:   contextTokens,
+			RequestTimeout:     requestTimeout,
 			FixEnabled:         file.Agent.FixEnabled,
 			FixPushEnabled:     fixPushEnabled(file.Agent.FixEnabled, file.Agent.FixPushEnabled),
 			FixAllowedAuthors:  lowerCompact(file.Agent.FixAllowedAuthors),

@@ -184,12 +184,35 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	}
 	item := input.Review
 	item.Comment = ""
+	item.AttemptID = "" // a new delivery/attempt, not a retry of the original transport
 	s.runOne(context.Background(), item)
 	if len(runner.inputs) != 2 {
 		t.Fatal("完整的 PR 任务未正常审查")
 	}
 	if _, err := os.Stat(apiPath); !os.IsNotExist(err) {
 		t.Fatalf("自动 PR 事件不应补拉元数据: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var activities []store.Activity
+	if err := json.Unmarshal(raw, &activities); err != nil {
+		t.Fatal(err)
+	}
+	if len(activities) != 2 || activities[1].State != "completed" || activities[1].Stage != "published" {
+		t.Fatalf("publication not recorded: %s", raw)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(apiPath), "gh"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	s.runOne(context.Background(), item)
+	raw, _ = os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
+	if err := json.Unmarshal(raw, &activities); err != nil {
+		t.Fatal(err)
+	}
+	if activities[2].State != "failed" || activities[2].Stage != "publish" || activities[2].CommentURL != "" {
+		t.Fatalf("failed publication shown as completed: %s", raw)
 	}
 }
 

@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MojoReviewer · 管理台</title>
+<link rel="stylesheet" href="/style.css">
+<script src="/app.js" defer>
+</script>
+</head>
+<body>
+<aside>
+<a class="brand" href="/">Mojo<span>Reviewer</span>
+</a>
+<p class="eyebrow">LOCAL CONTROL</p>
+<nav>
+<button data-tab="overview" class="selected">服务与审查</button>
+<button data-tab="settings">连接配置</button>
+<button data-tab="logs">运行日志</button>
+</nav>
+<div class="aside-footer">
+<span class="dot">
+</span>本机管理入口<br>
+<small>管理器独立运行<br>停止 reviewer 后仍可访问</small>
+</div>
+</aside>
+<main>
+<header>
+<div>
+<p class="eyebrow">REVIEW AGENT / CONTROL ROOM</p>
+<h1 id="heading">服务与审查</h1>
+</div>
+<span id="connection" class="badge">正在连接</span>
+</header>
+<div id="message" role="status" aria-live="polite">
+</div>
+<section id="overview" class="view">
+<div class="service">
+<div>
+<p class="eyebrow">服务状态</p>
+<h2 id="phase">读取中</h2>
+<p id="error" class="muted">
+</p>
+</div>
+<div class="actions">
+<button data-action="start" class="primary">启动服务</button>
+<button data-action="stop">停止服务</button>
+<button data-action="restart">重启</button>
+</div>
+</div>
+<div class="metrics">
+<article>
+<span>Reviewer</span>
+<strong id="reviewer">—</strong>
+<small>进程内嵌 LuckyAgent</small>
+</article>
+<article>
+<span>公网入口</span>
+<strong id="tunnel">—</strong>
+<small id="probe">签名探测尚未运行</small>
+</article>
+<article>
+<span>审查队列</span>
+<strong id="queue">—</strong>
+<small>串行执行 · 最大排队 32</small>
+</article>
+</div>
+<div class="tunnel-bar">
+<div>
+<label>WEBHOOK ENDPOINT</label>
+<p id="endpoint">服务启动后生成地址</p>
+</div>
+<button data-action="tunnel">重建隧道</button>
+<button data-action="reconcile">检查漏审</button>
+</div>
+<div class="section-title">
+<div>
+<h2>审查记录</h2>
+<p class="muted">最近 256 次尝试；完成状态在评论发布成功后写入。</p>
+</div>
+<button id="refresh">刷新</button>
+</div>
+<div class="table-wrap">
+<table>
+<thead>
+<tr>
+<th>仓库 / PR</th>
+<th>提交</th>
+<th>状态</th>
+<th>更新时间</th>
+<th>操作</th>
+</tr>
+</thead>
+<tbody id="reviews">
+</tbody>
+</table>
+<div id="empty" class="empty">
+<strong>还没有审查记录</strong>
+<p>配置仓库并启动服务后，PR 会自动进入审查队列。<br>旧版会话记录不会被标记为已完成。</p>
+</div>
+</div>
+<form id="retry-form" class="retry-form">
+<label for="retry-repo">手动重新审查</label>
+<select id="retry-repo" required>
+</select>
+<input id="retry-number" aria-label="PR 编号" type="number" min="1" placeholder="PR 编号" required>
+<button class="primary">加入队列</button>
+<small>复用已有会话，审查当前 head</small>
+</form>
+</section>
+<section id="settings" class="view" hidden>
+<div class="section-title">
+<div>
+<h2>连接配置</h2>
+<p class="muted">停止服务后保存。密钥留空表示保留已有值，界面不会回显密钥。</p>
+</div>
+</div>
+<form id="config-form">
+<fieldset>
+<legend>模型</legend>
+<div class="form-grid">
+<label>供应商<input name="provider" placeholder="openai-compatible" required>
+</label>
+<label>模型名<input name="model" placeholder="填写模型名" required>
+</label>
+<label class="wide">API 地址<input name="api_base" placeholder="https://…/v1">
+</label>
+<label>API Key<input name="api_key" type="password" autocomplete="new-password" placeholder="填写密钥">
+</label>
+<label>单次审查超时<input name="task_timeout" placeholder="20m" required>
+</label>
+<label>上下文 token 上限<input name="max_context_tokens" type="number" min="1000" value="40000" required>
+</label>
+<label>模型请求超时<input name="request_timeout" value="5m" required>
+</label>
+</div>
+</fieldset>
+<fieldset>
+<legend>GitHub 与 webhook</legend>
+<div class="form-grid">
+<label>审查账户<input name="reviewer_account" value="raymojo42" required>
+</label>
+<label>Webhook 管理账户<input name="admin_account" value="fullac" required>
+</label>
+<label>GitHub 主机<input name="host" placeholder="github.com">
+</label>
+<label>评论触发用户<input name="trigger_user" placeholder="raymojo42" required>
+</label>
+<label class="wide">Webhook secret<input name="webhook_secret" type="password" autocomplete="new-password">
+</label>
+<label class="wide">仓库与 webhook ID<textarea name="hooks" rows="4" placeholder="owner/repo 123456789">
+</textarea>
+<small>每行一个 owner/repo 和 ID。填 0 会新建 webhook；已有 ID 表示授权本管理器维护它。</small>
+</label>
+<label>Reviewer 端口<input name="port" type="number" min="1" max="65535" value="9968" required>
+</label>
+<label class="check">
+<input name="auto_start" type="checkbox">管理器启动时自动启动服务</label>
+</div>
+<p class="muted">两个账户需先通过 gh auth login 登录。Reviewer 发布评论使用审查账户。</p>
+</fieldset>
+<div class="form-footer">
+<button class="primary">保存配置</button>
+<span id="config-note" class="muted">
+</span>
+</div>
+</form>
+</section>
+<section id="logs" class="view" hidden>
+<div class="section-title">
+<div>
+<h2>运行日志</h2>
+<p class="muted">当前管理器最近 400 行，已过滤配置中的凭据。</p>
+</div>
+</div>
+<pre id="log-output" tabindex="0">
+</pre>
+</section>
+<footer>MojoReviewer <span>本机服务 · 页面每 3 秒更新</span>
+</footer>
+</main>
+</body>
+</html>

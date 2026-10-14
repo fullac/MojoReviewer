@@ -51,6 +51,15 @@ jobs:
         working-directory: MojoReviewer
         run: go test ./...
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test manager
+        working-directory: MojoReviewer
+        run: python3 -m unittest discover -s ops -p 'test_*.py'
+
       - name: Build
         working-directory: MojoReviewer
         run: go build -o /tmp/mojoreviewer ./cmd/mojoreviewer

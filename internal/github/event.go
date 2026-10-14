@@ -11,17 +11,18 @@ import (
 
 // Review 是一次需要审查的 PR。
 type Review struct {
-	Repo       string
-	Number     int
-	Title      string
-	Body       string
-	BaseBranch string
-	BaseSHA    string
-	HeadBranch string
-	HeadSHA    string
-	CloneURL   string
-	Author     string
-	HTMLURL    string
+	AttemptID   string // generated locally; never read from webhook payloads
+	Repo        string
+	Number      int
+	Title       string
+	Body        string
+	BaseBranch  string
+	BaseSHA     string
+	HeadBranch  string
+	HeadSHA     string
+	CloneURL    string
+	Author      string
+	HTMLURL     string
 	Comment     string
 	Instruction string
 	Intent      Intent

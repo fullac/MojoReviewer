@@ -49,10 +49,37 @@ func (s *Store) Get(key string) (Record, bool) {
 func (s *Store) Put(key string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	old, existed := s.data[key]
+	committed := false
+	defer func() {
+		if !committed {
+			if existed {
+				s.data[key] = old
+			} else {
+				delete(s.data, key)
+			}
+		}
+	}()
 	s.data[key] = rec
 	raw, err := json.MarshalIndent(s.data, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, append(raw, '\n'), 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".reviews-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(append(raw, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err = tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), s.path); err != nil {
+		return err
+	}
+	committed = true
+	return nil
 }
