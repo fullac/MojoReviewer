@@ -38,6 +38,25 @@ func TestLoadFromHiddenConfig(t *testing.T) {
 	if cfg.Agent.HomeDir != filepath.Join(cfg.DataDir, "luckyagent") {
 		t.Fatalf("HomeDir 应落在数据目录下: %s", cfg.Agent.HomeDir)
 	}
+	if cfg.Agent.FixEnabled {
+		t.Fatal("未配置时 fix_enabled 应为 false")
+	}
+}
+
+func TestLoadFixEnabled(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {"api_key": "sk-test", "fix_enabled": true}
+	}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixEnabled {
+		t.Fatal("fix_enabled=true 未生效")
+	}
 }
 
 func TestLoadRejectsMissingSecret(t *testing.T) {
@@ -89,5 +108,71 @@ func writeConfig(t *testing.T, body string) {
 	}
 	if err := os.WriteFile(ConfigPath, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLoadFixSecurityOptions(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {
+	    "api_key": "sk-test",
+	    "fix_enabled": true,
+	    "fix_push_enabled": false,
+	    "fix_allowed_authors": ["@Ada", "bob", "ADA"],
+	    "fix_max_changed_files": 12,
+	    "fix_max_diff_bytes": 1000
+	  }
+	}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixEnabled || cfg.Agent.FixPushEnabled {
+		t.Fatalf("push 应显式关闭: %+v", cfg.Agent)
+	}
+	if got := strings.Join(cfg.Agent.FixAllowedAuthors, ","); got != "ada,bob" {
+		t.Fatalf("authors=%v", cfg.Agent.FixAllowedAuthors)
+	}
+	if cfg.Agent.FixMaxChangedFiles != 12 || cfg.Agent.FixMaxDiffBytes != 1000 {
+		t.Fatalf("limits=%d %d", cfg.Agent.FixMaxChangedFiles, cfg.Agent.FixMaxDiffBytes)
+	}
+}
+
+func TestLoadFixPushDefaultsWithFix(t *testing.T) {
+	dir := t.TempDir()
+	t.Chdir(dir)
+	writeConfig(t, `{
+	  "github": {"webhook_secret": "hook"},
+	  "agent": {"api_key": "sk-test", "fix_enabled": true}
+	}`)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Agent.FixPushEnabled {
+		t.Fatal("fix_enabled 时默认应允许 push")
+	}
+}
+
+func TestManagedContextAndRequestTimeout(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeConfig(t, `{"agent":{"api_key":"fixture","max_context_tokens":40000,"request_timeout":"300s"},"github":{"webhook_secret":"fixture"}}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Agent.MaxContextTokens != 40000 || cfg.Agent.RequestTimeout.String() != "5m0s" {
+		t.Fatal("limits not applied")
+	}
+	for _, fields := range []string{`"max_context_tokens":-1`, `"request_timeout":"zero"`, `"request_timeout":"0s"`} {
+		writeConfig(t, `{"agent":{"api_key":"fixture",`+fields+`},"github":{"webhook_secret":"fixture"}}`)
+		if _, err := Load(); err == nil {
+			t.Fatal("invalid limit accepted")
+		}
+
 	}
 }

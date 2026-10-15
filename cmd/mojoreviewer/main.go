@@ -10,6 +10,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/server"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
@@ -32,6 +33,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	memStore, err := projectmem.Open(filepath.Join(cfg.DataDir, "project_memory.json"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	runner.AttachProjectMemory(memStore)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := server.New(cfg, runner, st).Start(ctx); err != nil {

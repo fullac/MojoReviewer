@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent/sdk"
 )
@@ -13,7 +14,12 @@ func TestPromptUsesReviewTools(t *testing.T) {
 	got := prompt(ReviewInput{
 		Review:  github.Review{Repo: "acme/web", Number: 1, BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head"},
 		WorkDir: "/tmp/review",
-		Diff:    "diff",
+		// Diff must not appear in the prompt even if a caller still fills it.
+		Diff: strings.Repeat("HUGE_DIFF_SHOULD_NOT_APPEAR_", 5000),
+		Memory: projectmem.ContextBundle{
+			Memories: []string{"仓库约定：比较基线用 refs/review/base"},
+			RAGHits:  []string{"[AGENTS.md] 只审查，不改仓库"},
+		},
 	})
 	for _, want := range []string{
 		"pr_diff_stat",
@@ -27,10 +33,21 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		"shallow",
 		"refs/review/base",
 		"git diff main...HEAD",
+		"项目记忆",
+		"只审查，不改仓库",
+		"不要期待提示词里有整份 diff",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("提示缺少 %q:\n%s", want, got)
 		}
+	}
+	for _, bad := range []string{"HUGE_DIFF_SHOULD_NOT_APPEAR_", "已准备的 diff"} {
+		if strings.Contains(got, bad) {
+			t.Fatalf("提示不应包含 %q（issue #21）", bad)
+		}
+	}
+	if len(got) > 8000 {
+		t.Fatalf("审查 prompt 过长: %d 字符（不应再钉整份 diff）", len(got))
 	}
 }
 
@@ -49,7 +66,6 @@ func TestArgHelpers(t *testing.T) {
 		t.Fatalf("argInt nil = %d", got)
 	}
 }
-
 
 func TestLockToolsToReviewOnly(t *testing.T) {
 	home := t.TempDir()
@@ -127,5 +143,76 @@ func TestSetSessionWorkingDir(t *testing.T) {
 	}
 	if got := sess.GetCwd(); got != dir {
 		t.Fatalf("cwd = %q, want %q", got, dir)
+	}
+}
+
+func TestLockToolsToFixMode(t *testing.T) {
+	home := t.TempDir()
+	auto := true
+	agent, err := sdk.New(sdk.Config{
+		HomeDir:      home,
+		Provider:     "openai",
+		Model:        "gpt-test",
+		APIKey:       "sk-test",
+		SystemPrompt: "test",
+		AutoApprove:  &auto,
+		DisableTools: bootstrapDisableTools,
+	})
+	if err != nil {
+		t.Fatalf("sdk.New: %v", err)
+	}
+	defer agent.Close()
+
+	notes := &review.Notes{}
+	scope := review.ToolScope{Dir: t.TempDir()}
+	if err := registerReviewTools(agent, scope, notes); err != nil {
+		t.Fatalf("registerReviewTools: %v", err)
+	}
+	if err := lockToolsToFixMode(agent); err != nil {
+		t.Fatalf("lockToolsToFixMode: %v", err)
+	}
+	enabled := map[string]bool{}
+	for _, info := range agent.ListTools() {
+		enabled[info.Name] = info.Enabled
+	}
+	for name := range fixToolAllowlist {
+		if !enabled[name] {
+			t.Fatalf("fix 工具应启用: %s", name)
+		}
+	}
+	for _, name := range []string{"terminal", "web_fetch", "computer_act", "autonomy"} {
+		if enabled[name] {
+			t.Fatalf("危险工具不应启用: %s", name)
+		}
+	}
+}
+
+func TestFixPrompt(t *testing.T) {
+	got := fixPrompt(ReviewInput{
+		Review: github.Review{
+			Repo: "acme/web", Number: 1, Title: "t",
+			BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head",
+			Instruction: "改超时",
+		},
+		WorkDir: "/tmp/review",
+		Diff:    strings.Repeat("FIX_DIFF_SHOULD_NOT_APPEAR_", 3000),
+	})
+	for _, want := range []string{"file_patch", "file_write", "宿主", "改超时", "refs/review/base", "不要期待提示词里有整份 diff"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("fix 提示缺少 %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "FIX_DIFF_SHOULD_NOT_APPEAR_") || strings.Contains(got, "已准备的 diff") {
+		t.Fatal("fix 提示不应预置整份 diff（issue #21）")
+	}
+}
+
+func TestRunnerFixEnabledFlag(t *testing.T) {
+	r := &Runner{fixEnabled: true}
+	if !r.FixEnabled() {
+		t.Fatal("expected enabled")
+	}
+	if (&Runner{}).FixEnabled() {
+		t.Fatal("default false")
 	}
 }

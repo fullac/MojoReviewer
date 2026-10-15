@@ -1,0 +1,28 @@
+{
+  "log_level": "info",
+  "data_dir": "",
+  "server": {
+    "host": "127.0.0.1",
+    "port": 9968
+  },
+  "github": {
+    "host": "",
+    "webhook_secret": "replace-me",
+    "token": "",
+    "repos": [],
+    "trigger_user": "mojo"
+  },
+  "agent": {
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "api_key": "replace-me",
+    "api_base": "",
+    "task_timeout": "20m",
+    "home_dir": "",
+    "fix_enabled": false,
+    "fix_push_enabled": false,
+    "fix_allowed_authors": [],
+    "fix_max_changed_files": 40,
+    "fix_max_diff_bytes": 200000
+  }
+}

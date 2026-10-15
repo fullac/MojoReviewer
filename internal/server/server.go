@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
@@ -18,6 +20,9 @@ import (
 
 type reviewRunner interface {
 	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
+	Fix(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
+	RememberProject(content string) error
+	FixEnabled() bool
 }
 
 // Server 接收 GitHub webhook，串行跑只读审查。
@@ -27,6 +32,8 @@ type Server struct {
 	store   *store.Store
 	allowed map[string]bool
 	jobs    chan github.Review
+	mu      sync.Mutex
+	pending map[string]bool
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -35,11 +42,14 @@ func New(cfg config.Config, runner *agent.Runner, st *store.Store) *Server {
 	for _, repo := range cfg.GitHub.Repos {
 		allowed[repo] = true
 	}
-	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32)}
+	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32), pending: map[string]bool{}}
 }
 
 // Start 启动 HTTP 服务和单个审查 worker。
 func (s *Server) Start(ctx context.Context) error {
+	if err := s.store.InterruptActivities(); err != nil {
+		return err
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -83,18 +93,44 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"status":"ignored"}`))
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if item.Comment == "" && s.pending[item.SessionKey+":"+item.HeadSHA] {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
+		return
+	}
 	if existing, ok := s.store.Get(item.SessionKey); ok && item.Comment == "" && existing.HeadSHA == item.HeadSHA {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
 		return
 	}
-	select {
-	case s.jobs <- *item:
-		w.WriteHeader(http.StatusAccepted)
-		_, _ = w.Write([]byte(`{"status":"queued"}`))
-	default:
-		http.Error(w, "队列已满", http.StatusTooManyRequests)
+	item.AttemptID = fmt.Sprint(time.Now().UnixNano())
+	if delivery := r.Header.Get("X-GitHub-Delivery"); delivery != "" && len(delivery) <= 128 {
+		item.AttemptID = "github:" + delivery
+		seen, err := s.store.HasActivity(item.AttemptID)
+		if err != nil {
+			http.Error(w, "读取投递记录失败", 500)
+			return
+		}
+		if seen {
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(`{"status":"duplicate"}`))
+			return
+		}
 	}
+	if len(s.jobs) == cap(s.jobs) {
+		http.Error(w, "队列已满", http.StatusTooManyRequests)
+		return
+	}
+
+	s.pending[item.SessionKey+":"+item.HeadSHA] = true
+	if err := s.store.Activity(store.Activity{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}); err != nil {
+		log.Printf("记录排队状态失败")
+	}
+	s.jobs <- *item
+	w.WriteHeader(http.StatusAccepted)
+	_, _ = w.Write([]byte(`{"status":"queued"}`))
 }
 
 func (s *Server) worker(ctx context.Context) {
@@ -109,33 +145,91 @@ func (s *Server) worker(ctx context.Context) {
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
+	if item.Intent == "" {
+		item.Intent = github.IntentReview
+	}
+	log.Printf("开始任务 %s intent=%s", item.SessionKey, item.Intent)
+
+	key := item.SessionKey + ":" + item.HeadSHA
+	s.mu.Lock()
+	id := item.AttemptID
+	s.mu.Unlock()
+	if id == "" {
+		id = fmt.Sprint(time.Now().UnixNano())
+	}
+	activity := store.Activity{ID: id, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "running"}
+	_ = s.store.Activity(activity)
+	defer func() {
+		if activity.State == "running" {
+			activity.State = "failed"
+		}
+		if err := s.store.Activity(activity); err != nil {
+			log.Printf("记录审查状态失败")
+		}
+		s.mu.Lock()
+		delete(s.pending, key)
+		s.mu.Unlock()
+	}()
+	// Once an automatic attempt actually starts, reserve its SHA even if setup fails.
+	// Merely queued attempts remain recoverable after a process restart.
+	if item.Comment == "" {
+		existing, _ := s.store.Get(item.SessionKey)
+		existing.Repo, existing.Number, existing.HeadSHA = item.Repo, item.Number, item.HeadSHA
+		if err := s.store.Put(item.SessionKey, existing); err != nil {
+			activity.Stage = "storage"
+			return
+		}
+	}
 	log.Printf("开始审查 %s", item.SessionKey)
+
 	if item.Comment != "" {
+		activity.Stage = "metadata"
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
 			s.postFailure(item, "补齐 PR 信息失败", err)
 			return
 		}
+		// ResolveComment 不改 Intent/Instruction/Comment。
+		intent, instruction := item.Intent, item.Instruction
+		comment := item.Comment
 		item = resolved
+		item.Intent = intent
+		if item.Intent == "" {
+			item.Intent = github.IntentReview
+		}
+		item.Instruction = instruction
+		item.Comment = comment
+	}
+	activity.HeadSHA = item.HeadSHA
+	activity.Stage = "checkout"
+
+	switch item.Intent {
+	case github.IntentRemember:
+		s.runRemember(item, &activity)
+		return
+	case github.IntentFix:
+		if !s.runner.FixEnabled() {
+			s.runFixUnsupported(item, &activity)
+			return
+		}
+		if !fixAuthorAllowed(s.cfg.Agent.FixAllowedAuthors, item.Author) {
+			s.runFixAuthorDenied(item, &activity)
+			return
+		}
+		s.runFix(ctx, item, &activity)
+		return
 	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	diffText := "（评论触发，沿用会话中的仓库上下文。请在仓库绝对路径内自行查看 diff。）"
-	if item.BaseSHA != "" && item.HeadSHA != "" {
-		diffText, err = review.Diff(ws.Dir, item.BaseSHA)
-		if err != nil {
-			log.Printf("读取 diff 失败 %s: %v", item.SessionKey, err)
-			diffText = "（diff 读取失败：" + err.Error() + "。请用 pr_diff_stat 和 pr_file_diff 查看。）"
-		}
-	}
 	existing, _ := s.store.Get(item.SessionKey)
+	activity.Stage = "model"
+	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
 	result, err := s.runner.Review(ctx, agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
-		Diff:      diffText,
 		SessionID: existing.SessionID,
 	})
 	if result.SessionID != "" {
@@ -145,11 +239,147 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		log.Printf("审查失败 %s: %v", item.SessionKey, err)
 		return
 	}
-	if err := review.PostComment(item.Repo, item.Number, result.Text, s.cfg.GitHub.Host); err != nil {
+	activity.Stage = "publish"
+	commentURL, err := review.PostCommentURL(item.Repo, item.Number, result.Text, s.cfg.GitHub.Host)
+	if err != nil {
 		log.Printf("发布评论失败 %s: %v", item.SessionKey, err)
 		return
 	}
+	activity.State = "completed"
+	activity.Stage = "published"
+	activity.CommentURL = commentURL
 	log.Printf("审查完成 %s", item.SessionKey)
+}
+
+func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activity) {
+	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	if err != nil {
+		s.postFailure(item, "准备仓库失败", err)
+		return
+	}
+	existing, _ := s.store.Get(item.SessionKey)
+	a.Stage = "model"
+	// Diff is intentionally empty: the model pulls tools instead of a pinned bulk patch (issue #21).
+	result, err := s.runner.Fix(ctx, agent.ReviewInput{
+		Review:    item,
+		WorkDir:   ws.Dir,
+		SessionID: existing.SessionID,
+	})
+	if result.SessionID != "" {
+		_ = s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID})
+	}
+	if err != nil {
+		log.Printf("修复失败 %s: %v", item.SessionKey, err)
+		s.postFailure(item, "修复失败", err)
+		return
+	}
+	body := result.Text
+	if strings.TrimSpace(body) == "" {
+		body = "fix 会话已结束，但没有返回说明。"
+	}
+	a.Stage = "publish"
+	pub, pubErr := review.PublishFix(ws.Dir, item.HeadBranch, item.BaseBranch, publishMessage(item, result.Text), review.PublishLimits{
+		MaxChangedFiles: s.cfg.Agent.FixMaxChangedFiles,
+		MaxDiffBytes:    s.cfg.Agent.FixMaxDiffBytes,
+		PushEnabled:     s.cfg.Agent.FixPushEnabled,
+	})
+	body = "fix 结果：\n\n" + body + "\n\n" + pub.Render()
+	if pubErr != nil {
+		log.Printf("发布修复提交失败 %s: %v", item.SessionKey, pubErr)
+		body += "\n\n提交/推送失败：" + publicFailure(pubErr)
+		if err := review.PostComment(item.Repo, item.Number, body, s.cfg.GitHub.Host); err != nil {
+			log.Printf("发布修复评论失败 %s: %v", item.SessionKey, err)
+		}
+		return
+	}
+	if pub.Changed && pub.CommitSHA != "" {
+		_ = s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA, SessionID: result.SessionID})
+	}
+	commentURL, err := review.PostCommentURL(item.Repo, item.Number, body, s.cfg.GitHub.Host)
+	if err != nil {
+		log.Printf("发布修复评论失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	a.State = "completed"
+	a.Stage = "published"
+	a.CommentURL = commentURL
+	log.Printf("修复完成 %s changed=%v sha=%s", item.SessionKey, pub.Changed, pub.CommitSHA)
+}
+
+func publishMessage(item github.Review, agentText string) string {
+	if note := strings.TrimSpace(item.Instruction); note != "" {
+		return note
+	}
+	text := strings.TrimSpace(agentText)
+	if text == "" {
+		return "apply requested fix"
+	}
+	// 用首行当 commit message，避免整段审查笔记进标题
+	if i := strings.IndexByte(text, '\n'); i >= 0 {
+		text = text[:i]
+	}
+	return text
+}
+
+func (s *Server) runRemember(item github.Review, a *store.Activity) {
+	note := strings.TrimSpace(item.Instruction)
+	if note == "" {
+		_ = review.PostComment(item.Repo, item.Number, "没有可记住的内容。用法：`@"+strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")+" remember <事实>`", s.cfg.GitHub.Host)
+		a.State = "completed"
+		a.Stage = "published"
+		return
+	}
+	content := fmt.Sprintf("仓库 %s 的人工补充记忆：%s", item.Repo, note)
+	if err := s.runner.RememberProject(content); err != nil {
+		log.Printf("remember 失败 %s: %v", item.SessionKey, err)
+		s.postFailure(item, "写入项目记忆失败", err)
+		return
+	}
+	if _, err := review.PostCommentURL(item.Repo, item.Number, "已记住：\n"+note, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 remember 确认失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	a.State = "completed"
+	a.Stage = "published"
+	log.Printf("remember 完成 %s", item.SessionKey)
+}
+
+func fixAuthorAllowed(allow []string, author string) bool {
+	if len(allow) == 0 {
+		return true
+	}
+	author = strings.ToLower(strings.TrimSpace(author))
+	author = strings.TrimPrefix(author, "@")
+	for _, a := range allow {
+		if a == author {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) runFixAuthorDenied(item github.Review, a *store.Activity) {
+	msg := "当前账号无权触发 fix。允许的账号：" + strings.Join(s.cfg.Agent.FixAllowedAuthors, ", ")
+	if _, err := review.PostCommentURL(item.Repo, item.Number, msg, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 fix 权限拒绝评论失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	a.State = "completed"
+	a.Stage = "published"
+	log.Printf("fix 作者未授权 %s author=%s", item.SessionKey, item.Author)
+}
+
+func (s *Server) runFixUnsupported(item github.Review, a *store.Activity) {
+	user := strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")
+	msg := "fix 模式未启用。请在配置里打开 `agent.fix_enabled`，或改用只读 review / remember。\n" +
+		"可用：`@" + user + " review ...` / `@" + user + " remember ...`"
+	if _, err := review.PostCommentURL(item.Repo, item.Number, msg, s.cfg.GitHub.Host); err != nil {
+		log.Printf("发布 fix 提示失败 %s: %v", item.SessionKey, err)
+		return
+	}
+	a.State = "completed"
+	a.Stage = "published"
+	log.Printf("fix 暂未开放，已回复 %s", item.SessionKey)
 }
 
 func (s *Server) postFailure(item github.Review, stage string, err error) {

@@ -54,12 +54,25 @@ type GitHubConfig struct {
 
 // AgentConfig 是嵌入的 LuckyAgent。一个进程只用一个模型。
 type AgentConfig struct {
-	Provider    string
-	Model       string
-	APIKey      string
-	APIBase     string
-	TaskTimeout time.Duration
-	HomeDir     string
+	Provider         string
+	Model            string
+	APIKey           string
+	APIBase          string
+	TaskTimeout      time.Duration
+	HomeDir          string
+	MaxContextTokens int
+	RequestTimeout   time.Duration
+	// FixEnabled 允许 @trigger fix 进入可写会话（改检出内文件）。默认 false。
+	FixEnabled bool
+	// FixPushEnabled 允许宿主在 fix 后 commit 并 push 到 PR head。
+	// 默认跟随 FixEnabled：开启 fix 时默认可 push；可显式 false 只改工作区不推送。
+	FixPushEnabled bool
+	// FixAllowedAuthors 非空时，只有这些 GitHub login 的评论能触发 fix（小写比较）。
+	FixAllowedAuthors []string
+	// FixMaxChangedFiles 单次 fix 可提交的最大文件数。0 表示默认 40。
+	FixMaxChangedFiles int
+	// FixMaxDiffBytes 单次 fix 可提交的 diff 字节上限。0 表示默认 200_000。
+	FixMaxDiffBytes int
 }
 
 type fileConfig struct {
@@ -77,12 +90,19 @@ type fileConfig struct {
 		TriggerUser   string   `json:"trigger_user"`
 	} `json:"github"`
 	Agent struct {
-		Provider    string `json:"provider"`
-		Model       string `json:"model"`
-		APIKey      string `json:"api_key"`
-		APIBase     string `json:"api_base"`
-		TaskTimeout string `json:"task_timeout"`
-		HomeDir     string `json:"home_dir"`
+		Provider           string   `json:"provider"`
+		Model              string   `json:"model"`
+		APIKey             string   `json:"api_key"`
+		APIBase            string   `json:"api_base"`
+		TaskTimeout        string   `json:"task_timeout"`
+		HomeDir            string   `json:"home_dir"`
+		FixEnabled         bool     `json:"fix_enabled"`
+		FixPushEnabled     *bool    `json:"fix_push_enabled"`
+		FixAllowedAuthors  []string `json:"fix_allowed_authors"`
+		FixMaxChangedFiles int      `json:"fix_max_changed_files"`
+		FixMaxDiffBytes    int      `json:"fix_max_diff_bytes"`
+		MaxContextTokens   int      `json:"max_context_tokens"`
+		RequestTimeout     string   `json:"request_timeout"`
 	} `json:"agent"`
 }
 
@@ -115,6 +135,20 @@ func normalize(file fileConfig) (Config, error) {
 			return Config{}, fmt.Errorf("agent.task_timeout 无效: %s", raw)
 		}
 	}
+	contextTokens := file.Agent.MaxContextTokens
+	if contextTokens == 0 {
+		contextTokens = 40000
+	}
+	if contextTokens < 1000 {
+		return Config{}, fmt.Errorf("agent.max_context_tokens 必须至少为 1000")
+	}
+	requestTimeout := 5 * time.Minute
+	if raw := strings.TrimSpace(file.Agent.RequestTimeout); raw != "" {
+		requestTimeout, err = time.ParseDuration(raw)
+		if err != nil || requestTimeout <= 0 {
+			return Config{}, fmt.Errorf("agent.request_timeout 无效")
+		}
+	}
 	agentHome := strings.TrimSpace(file.Agent.HomeDir)
 	if agentHome == "" {
 		agentHome = filepath.Join(dataDir, "luckyagent")
@@ -134,12 +168,19 @@ func normalize(file fileConfig) (Config, error) {
 			TriggerUser:   strings.TrimPrefix(strings.TrimSpace(file.GitHub.TriggerUser), "@"),
 		},
 		Agent: AgentConfig{
-			Provider:    fallback(file.Agent.Provider, "openai"),
-			Model:       fallback(file.Agent.Model, "gpt-5.4-mini"),
-			APIKey:      strings.TrimSpace(file.Agent.APIKey),
-			APIBase:     strings.TrimSpace(file.Agent.APIBase),
-			TaskTimeout: timeout,
-			HomeDir:     agentHome,
+			Provider:           fallback(file.Agent.Provider, "openai"),
+			Model:              fallback(file.Agent.Model, "gpt-5.4-mini"),
+			APIKey:             strings.TrimSpace(file.Agent.APIKey),
+			APIBase:            strings.TrimSpace(file.Agent.APIBase),
+			TaskTimeout:        timeout,
+			HomeDir:            agentHome,
+			MaxContextTokens:   contextTokens,
+			RequestTimeout:     requestTimeout,
+			FixEnabled:         file.Agent.FixEnabled,
+			FixPushEnabled:     fixPushEnabled(file.Agent.FixEnabled, file.Agent.FixPushEnabled),
+			FixAllowedAuthors:  lowerCompact(file.Agent.FixAllowedAuthors),
+			FixMaxChangedFiles: file.Agent.FixMaxChangedFiles,
+			FixMaxDiffBytes:    file.Agent.FixMaxDiffBytes,
 		},
 	}
 	if cfg.Server.Port == 0 {
@@ -181,6 +222,32 @@ func compact(items []string) []string {
 		if item != "" {
 			out = append(out, item)
 		}
+	}
+	return out
+}
+
+func fixPushEnabled(fixEnabled bool, explicit *bool) bool {
+	if explicit != nil {
+		return *explicit
+	}
+	// 未写 fix_push_enabled 时：fix 开启则可 push，否则 false。
+	return fixEnabled
+}
+
+func lowerCompact(items []string) []string {
+	out := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item = strings.ToLower(strings.TrimSpace(item))
+		item = strings.TrimPrefix(item, "@")
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		out = append(out, item)
 	}
 	return out
 }
