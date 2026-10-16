@@ -79,13 +79,19 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 | 工具 | 作用 |
 | --- | --- |
-| `pr_diff_stat` | 文件列表、增删行数、整份 patch 是否超过工具侧上限 |
+| `pr_diff_stat` | 文件列表分页（offset/limit）、增删行数、整份 patch 是否超限 |
 | `pr_file_diff` | 单个文件相对 `refs/review/base` 的 patch |
 | `read_repo_file` | 检出内读文件，可带行号 |
 | `repo_grep` | 只在检出内搜索 |
 | `changed_symbols` | 改动的函数、类型、方法。Go 用 `go/parser`，其他语言用声明行正则 |
 | `tests_around` | 改动文件附近已有的测试 |
 | `review_note` | 记一条。`severity` 只能是 `严重` 或 `建议` |
+
+`pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
+
+只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。
+
+模型中断时保留已记录的笔记和读取范围，发布带「审查未完成」的失败说明；可识别的 foreground 任务只公开任务 ID 与原运行时恢复指令，不公开原始错误/prompt。失败说明发布后仍记录 `failed/model`，只补充评论 URL，不能标记为审查完成。
 
 `read_repo_file` 和 `pr_file_diff` 拒绝 `..` 和检出外绝对路径。加新工具时保持这个范围，不要给模型写文件、访问网络、或调用桌面控制。
 

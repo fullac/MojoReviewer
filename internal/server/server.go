@@ -236,7 +236,14 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		_ = s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID})
 	}
 	if err != nil {
-		log.Printf("审查失败 %s: %v", item.SessionKey, err)
+		log.Printf("审查未完成 %s，准备发布失败说明", item.SessionKey)
+		commentURL, postErr := review.PostCommentURL(item.Repo, item.Number, reviewFailureComment(result, err), s.cfg.GitHub.Host)
+		if postErr != nil {
+			log.Printf("发布审查失败说明失败 %s: %v", item.SessionKey, postErr)
+			return
+		}
+		activity.CommentURL = commentURL
+		// 保留 model/failed，不把“失败说明已发布”标记成审查完成。
 		return
 	}
 	activity.Stage = "publish"

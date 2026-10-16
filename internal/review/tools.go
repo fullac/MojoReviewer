@@ -30,22 +30,67 @@ type ToolScope struct {
 	Dir string
 }
 
-// Stat 是 git diff --numstat。truncated 表示整份 patch 超过工具侧上限（见 maxDiffBytes）。
+// Stat 返回文件地图的第一页。继续读取请使用 StatPage。
 func (s ToolScope) Stat() (string, error) {
+	return s.StatPage(0, 50)
+}
+
+// StatPage 按文件分页；has_more 与 patch_truncated 分别表示列表和 patch 的状态。
+func (s ToolScope) StatPage(offset, limit int) (string, error) {
 	if err := s.require(); err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--numstat", baseRef, "HEAD")
+	if offset < 0 || limit < 0 {
+		return "", fmt.Errorf("offset/limit 不能为负数")
+	}
+	if limit == 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	out, err := gitOutput(s.Dir, "diff", "--numstat", "--no-renames", "-z", baseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
 	patch, patchErr := gitOutput(s.Dir, "diff", "--patch", baseRef, "HEAD")
-	truncated := patchErr == nil && len(patch) > maxDiffBytes
-	text := formatNumstat(out, truncated)
-	if text == "" {
-		return "（没有代码差异）", nil
+	if patchErr != nil {
+		return "", patchErr
 	}
-	return clip(text, maxStatBytes), nil
+	var rows []string
+	for _, record := range strings.Split(out, "\x00") {
+		fields := strings.SplitN(record, "\t", 3)
+		if len(fields) == 3 {
+			// Quote 控制字符，保证一个文件只占一行；带空格的路径保留完整。
+			path := fields[2]
+			if strings.ContainsAny(path, "\n\r\t") {
+				path = strconv.Quote(path)
+			}
+			rows = append(rows, fmt.Sprintf("%s\t+%s\t-%s\n", path, fields[0], fields[1]))
+		}
+	}
+	if offset > len(rows) {
+		offset = len(rows)
+	}
+	var page strings.Builder
+	next := offset
+	for next < len(rows) && next-offset < limit && page.Len()+len(rows[next]) <= maxStatBytes-512 {
+		page.WriteString(rows[next])
+		next++
+	}
+	if next == offset && next < len(rows) {
+		return "", fmt.Errorf("单条文件记录超过输出上限")
+	}
+	hasMore := next < len(rows)
+	nextOffset := -1
+	if hasMore {
+		nextOffset = next
+	}
+	header := fmt.Sprintf("patch_truncated: %t\ntotal_files: %d\noffset: %d\nhas_more: %t\nnext_offset: %d\n", len(patch) > maxDiffBytes, len(rows), offset, hasMore, nextOffset)
+	if len(rows) == 0 {
+		return header + "（没有代码差异）", nil
+	}
+	return header + strings.TrimSuffix(page.String(), "\n"), nil
 }
 
 // FileDiff 只返回一个文件相对 refs/review/base 的 patch。
@@ -260,21 +305,6 @@ func (s ToolScope) clean(path string) (string, error) {
 		return "", fmt.Errorf("路径超出本次检出: %s", path)
 	}
 	return rel, nil
-}
-
-func formatNumstat(raw string, truncated bool) string {
-	var b strings.Builder
-	if truncated {
-		b.WriteString("truncated: true\n")
-	}
-	for _, line := range strings.Split(raw, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		fmt.Fprintf(&b, "%s\t+%s\t-%s\n", fields[2], fields[0], fields[1])
-	}
-	return strings.TrimSpace(b.String())
 }
 
 func changedLines(dir, rel string) ([][2]int, error) {

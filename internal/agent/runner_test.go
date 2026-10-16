@@ -86,7 +86,7 @@ func TestLockToolsToReviewOnly(t *testing.T) {
 
 	notes := &review.Notes{}
 	scope := review.ToolScope{Dir: t.TempDir()}
-	if err := registerReviewTools(agent, scope, notes); err != nil {
+	if err := registerReviewTools(agent, scope, notes, nil); err != nil {
 		t.Fatalf("registerReviewTools: %v", err)
 	}
 	if err := lockToolsToReviewOnly(agent); err != nil {
@@ -165,7 +165,7 @@ func TestLockToolsToFixMode(t *testing.T) {
 
 	notes := &review.Notes{}
 	scope := review.ToolScope{Dir: t.TempDir()}
-	if err := registerReviewTools(agent, scope, notes); err != nil {
+	if err := registerReviewTools(agent, scope, notes, nil); err != nil {
 		t.Fatalf("registerReviewTools: %v", err)
 	}
 	if err := lockToolsToFixMode(agent); err != nil {
