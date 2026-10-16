@@ -22,14 +22,19 @@ import (
 )
 
 type recordingRunner struct {
-	inputs     []agent.ReviewInput
-	fixInputs  []agent.ReviewInput
-	remembers  []string
-	fixEnabled bool
+	inputs       []agent.ReviewInput
+	fixInputs    []agent.ReviewInput
+	remembers    []string
+	fixEnabled   bool
+	reviewResult *agent.ReviewResult
+	reviewErr    error
 }
 
 func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
 	r.inputs = append(r.inputs, input)
+	if r.reviewResult != nil {
+		return *r.reviewResult, r.reviewErr
+	}
 	return agent.ReviewResult{SessionID: "existing-session", Text: "审查完成"}, nil
 }
 
@@ -61,8 +66,10 @@ case "$1" in
     cat "$MOJO_TEST_RESPONSE"
     ;;
   pr)
+    if [ "$MOJO_TEST_POST_FAILURE" = "1" ]; then exit 1; fi
     printf 'GH_HOST=%s\n' "$GH_HOST" >> "$MOJO_TEST_COMMENT"
     printf '%s\n' "$@" >> "$MOJO_TEST_COMMENT"
+    if [ -n "$MOJO_TEST_COMMENT_URL" ]; then printf '%s\n' "$MOJO_TEST_COMMENT_URL"; fi
     ;;
   *) exit 2 ;;
 esac
@@ -80,6 +87,8 @@ esac
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("GH_TOKEN", "")
 	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("MOJO_TEST_POST_FAILURE", "")
+	t.Setenv("MOJO_TEST_COMMENT_URL", "")
 	st, err := store.Open(filepath.Join(dir, "reviews.json"))
 	if err != nil {
 		t.Fatal(err)
