@@ -118,7 +118,15 @@ go vet ./...
 - 审查工具白名单；路径不得逃出本次检出。
 - fix 额外仅 `file_read` / `file_list` / `file_write` / `file_patch` / `file_mkdir`；无 terminal / 网络 / git。
 - 宿主提交拒绝 `.env*`、密钥类文件、`.git/` 等；push 非 force，且拒绝 head==base。
-- 失败评论只写阶段与归类原因；路径、令牌、命令 stderr 只进日志。
+- 失败评论写阶段与归类原因；不公开本地绝对路径、令牌、原始模型错误或命令 stderr。
+
+## 大 PR 与中断回报
+
+首轮 prompt 不包含整份 diff。`pr_diff_stat` 用 `offset`/`limit` 分页（默认 50 个文件，最多 200），按 `has_more` 与 `next_offset` 续取；`patch_truncated` 只描述整份 patch 是否超限。
+
+只读审查会记录本轮成功读取的文件/行段，重复调用返回已读提示，避免把相同代码反复送进上下文。新审查会重新记录；可写 fix 路径不启用这种去重。
+
+foreground 因重复读取未产生新证据而中断时，PR 会收到「审查未完成」说明，包含读取回执、任务 ID、原运行时会话的恢复指令，以及中断前已记录的意见。没有意见也会明确说明，不代表审查通过。状态仍为 `failed/model`；失败说明成功发布后保存评论 URL，不能当作完整审查完成。
 
 ## 项目记忆
 

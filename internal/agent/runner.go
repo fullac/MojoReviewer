@@ -135,22 +135,15 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
 	}
 	notes := &review.Notes{}
-	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
+	reads := &readProgress{}
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
-	if err != nil {
-		return ReviewResult{SessionID: sessionID}, err
-	}
-	result := ReviewResult{SessionID: sessionID, Text: strings.TrimSpace(text)}
-	if notes.Len() > 0 {
-		result.Text = notes.Render()
-		result.Noted = true
-	}
-	return result, nil
+	return reviewResult(sessionID, text, notes, reads, err)
 }
 
 // Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
@@ -188,7 +181,8 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
 	}
 	notes := &review.Notes{}
-	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes); err != nil {
+	// fix 工具可写文件，不能复用只读审查的读取去重记录。
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, nil); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	if err := lockToolsToFixMode(r.agent); err != nil {
@@ -318,11 +312,12 @@ func prompt(input ReviewInput) string {
 	// The model must fetch the file map and per-file patches via tools.
 	b.WriteString("\n不要期待提示词里有整份 diff。diff 不会预注入上下文（避免 durable goal 双倍占用预算）。\n")
 	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")
-	b.WriteString("1. 先调用 pr_diff_stat 看文件地图与是否截断。\n")
-	b.WriteString("2. 对重点文件调用 pr_file_diff 按文件读 patch；不要试图一次读完全部 diff。\n")
+	b.WriteString("1. 先调用 pr_diff_stat(offset=0, limit=50) 看文件地图；has_more=true 时用 next_offset 续取，直到 has_more=false。patch_truncated 只表示 patch 超限，不是文件列表被截断。\n")
+	b.WriteString("2. 对重点文件调用 pr_file_diff，每个 path 默认只读一次；需要上下文时用 read_repo_file 明确指定 start_line/end_line，同一行段不要重复读取。工具提示已读时改读未读范围或收束，不要循环重试。\n")
 	b.WriteString("3. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
 	b.WriteString("4. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
 	b.WriteString("5. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」。\n\n")
+	b.WriteString("主线证据足够后必须记录 review_note 并结束；没有发现问题则明确结束，不为凑结论反复读文件。无法核实的范围应明确说明，不能宣称完整审查。\n")
 	b.WriteString("规则：\n")
 	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。比较基线用 refs/review/base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
 	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")

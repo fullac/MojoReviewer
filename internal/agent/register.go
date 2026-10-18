@@ -14,14 +14,19 @@ import (
 type reviewTools struct {
 	scope review.ToolScope
 	notes *review.Notes
+	reads *readProgress
 }
 
-func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes) error {
-	tools := reviewTools{scope: scope, notes: notes}
+func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress) error {
+	tools := reviewTools{scope: scope, notes: notes, reads: reads}
 	specs := []sdk.ToolSpec{
 		{
-			Name:         "pr_diff_stat",
-			Description:  "返回本次 PR 相对 refs/review/base 的文件列表和增删行数。truncated 为 true 时，整份 patch 超过工具侧上限，请用 pr_file_diff 按文件补读。提示词不会预置整份 diff。",
+			Name:        "pr_diff_stat",
+			Description: "分页返回 PR 文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
+			Parameters: map[string]sdk.ToolParam{
+				"offset": {Type: "number", Description: "从第几个文件开始，0-based，默认 0"},
+				"limit":  {Type: "number", Description: "每页文件数，默认 50，最多 200"},
+			},
 			Handler:      tools.diffStat,
 			AutoApprove:  true,
 			ParallelSafe: true,
@@ -99,16 +104,38 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	return nil
 }
 
-func (t reviewTools) diffStat(_ map[string]any) (string, error) {
-	return t.scope.Stat()
+func (t reviewTools) diffStat(args map[string]any) (string, error) {
+	offset, limit := argInt(args, "offset"), argInt(args, "limit")
+	if limit == 0 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	return t.reads.read(readKey{kind: "pr_diff_stat", start: offset, end: limit}, func() (string, error) {
+		return t.scope.StatPage(offset, limit)
+	})
 }
 
 func (t reviewTools) fileDiff(args map[string]any) (string, error) {
-	return t.scope.FileDiff(argString(args, "path"))
+	path := argString(args, "path")
+	return t.reads.read(readKey{kind: "pr_file_diff", path: readPath(t.scope.Dir, path)}, func() (string, error) {
+		return t.scope.FileDiff(path)
+	})
 }
 
 func (t reviewTools) readFile(args map[string]any) (string, error) {
-	return t.scope.ReadFile(argString(args, "path"), argInt(args, "start_line"), argInt(args, "end_line"))
+	path := argString(args, "path")
+	start, end := argInt(args, "start_line"), argInt(args, "end_line")
+	if start <= 0 {
+		start = 1
+	}
+	if end <= 0 || end-start >= 400 {
+		end = start + 399
+	}
+	return t.reads.read(readKey{kind: "read_repo_file", path: readPath(t.scope.Dir, path), start: start, end: end}, func() (string, error) {
+		return t.scope.ReadFile(path, start, end)
+	})
 }
 
 func (t reviewTools) grep(args map[string]any) (string, error) {
