@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
-	"github.com/yurika0211/luckyagent/sdk"
+	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
 // reviewTools 是一次审查挂进模型的只读工具。

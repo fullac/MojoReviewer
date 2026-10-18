@@ -18,20 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.event.pull_request.draft == false
+    env:
+      GOWORK: "off"
     steps:
       - name: Checkout MojoReviewer
         uses: actions/checkout@v4
         with:
           path: MojoReviewer
-
-      # go.mod replace points at ../luckyagent next to this repo.
-      - name: Checkout LuckyAgent (local replace target)
-        uses: actions/checkout@v4
-        with:
-          repository: yurika0211/lucky-agent
-          path: luckyagent
-          # Public dependency; pin to default branch for reproducible CI of this service.
-          ref: master
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -43,13 +36,17 @@ jobs:
         working-directory: MojoReviewer
         run: go mod download
 
+      - name: Verify modules
+        working-directory: MojoReviewer
+        run: go mod verify
+
       - name: Vet
         working-directory: MojoReviewer
-        run: go vet ./...
+        run: go vet -mod=readonly ./...
 
       - name: Test
         working-directory: MojoReviewer
-        run: go test ./...
+        run: go test -mod=readonly -race ./...
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -62,4 +59,4 @@ jobs:
 
       - name: Build
         working-directory: MojoReviewer
-        run: go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
+        run: go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer

@@ -10,7 +10,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
-	"github.com/yurika0211/luckyagent/sdk"
+	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
 // Runner 在进程内跑一个 LuckyAgent，全局只用一个模型。

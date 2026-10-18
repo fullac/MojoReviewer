@@ -16,7 +16,13 @@ cp config.example.json .MojoReviewer/config.json
 # 填入 agent.api_key、github.webhook_secret；私有仓再填 github.token
 ```
 
-2. 本地依赖：相邻目录有 `luckyagent`（`go.mod` 里 `replace => ../luckyagent`），本机有 `git` / `gh`。
+2. 安装 Go 1.25+、`git` 和 `gh`，然后下载固定版本的公开模块：
+
+```bash
+GOWORK=off go mod download
+```
+
+LuckyAgent SDK 来自 `github.com/yurika0211/luckyagent-app/sdk`，版本固定在 `go.mod`，构建时不需要相邻的 LuckyAgent 检出。
 
 3. 运行：
 
@@ -38,7 +44,7 @@ go run ./cmd/mojoreviewer
 
 ## 本地管理 GUI
 
-`ops/start.py` 是提交到仓库的管理器。它独立于 reviewer 运行，不另起 LuckyAgent 服务。需要 Python 3.10+、`gh` 和 `cloudflared`，并在相邻的 `../luckyagent` 准备 SDK。
+`ops/start.py` 是提交到仓库的管理器。它独立于 reviewer 运行，不另起 LuckyAgent 服务。需要 Python 3.10+、Go 1.25+、`git`、`gh` 和 `cloudflared`。
 
 ```bash
 go build -o bin/mojoreviewer ./cmd/mojoreviewer
@@ -109,6 +115,9 @@ go vet ./...
 | `agent.fix_max_diff_bytes` | 单次改动体量上限，默认 200000 |
 | `data_dir` | 默认 `~/.mojoreviewer` |
 | `agent.home_dir` | LuckyAgent 家目录，默认 `$data_dir/luckyagent` |
+| `agent.max_context_tokens` | 组装上下文的 token 上限，默认 40000，至少 1000 |
+| `agent.request_timeout` | 单次模型请求超时，默认 `5m`，也用于本地检查执行预算 |
+| `agent.task_timeout` | 一次 review/fix 的总超时，默认 `20m` |
 
 完整边界与流程见 [`AGENTS.md`](AGENTS.md)。
 
@@ -135,12 +144,15 @@ foreground 因重复读取未产生新证据而中断时，PR 会收到「审查
 ## 验证
 
 ```bash
-go test ./...
-go vet ./...
-go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
+GOWORK=off go mod verify
+GOWORK=off go test -mod=readonly -race ./...
+GOWORK=off go vet -mod=readonly ./...
+GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ```
 
-向 `main` 的非草稿 PR 会跑 `.github/workflows/ci.yml`（同样三步；CI 会检出公开的 `yurika0211/lucky-agent` 到相邻 `luckyagent/`）。
+向 `main` 的非草稿 PR 会跑 `.github/workflows/ci.yml`：仅检出 MojoReviewer，从 `go.mod` / `go.sum` 下载依赖，关闭 Go workspace，执行模块校验、vet、竞态测试、Python 管理器测试和构建。
+
+升级 SDK 时应固定公开 tag 或提交版本，并核对 `GOWORK=off go list -mod=readonly -m all`。现有工具白名单、串行队列、隔离 HomeDir、chat/compact 使用同一模型，以及 fix 宿主提交门禁继续生效。
 
 ## License
 

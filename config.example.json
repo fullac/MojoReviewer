@@ -18,6 +18,8 @@
     "api_key": "replace-me",
     "api_base": "",
     "task_timeout": "20m",
+    "request_timeout": "5m",
+    "max_context_tokens": 40000,
     "home_dir": "",
     "fix_enabled": false,
     "fix_push_enabled": false,
