@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/yurika0211/luckyagent/sdk"
+	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
 // Indexer 把仓库高信号文档写入 LuckyAgent 隔离家目录里的 RAG / 记忆。

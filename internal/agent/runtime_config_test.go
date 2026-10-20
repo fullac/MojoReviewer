@@ -42,7 +42,7 @@ func TestIsolatedRuntimeKeepsConfiguredModelAndLimits(t *testing.T) {
 }
 
 func TestSDKLoadsManagedModelContextAndTimeout(t *testing.T) {
-	cfg := config.AgentConfig{HomeDir: t.TempDir(), Provider: "openai", Model: "gpt-test", APIKey: "fixture-value", MaxContextTokens: 40000, RequestTimeout: 5 * time.Minute, TaskTimeout: 20 * time.Minute}
+	cfg := config.AgentConfig{HomeDir: t.TempDir(), Provider: "openai", Model: "gpt-test", APIKey: "fixture-value", APIBase: "http://127.0.0.1:1/v1", MaxContextTokens: 40000, RequestTimeout: 5 * time.Minute, TaskTimeout: 20 * time.Minute}
 	runner, err := New(cfg)
 	if err != nil {
 		t.Fatal(err)
@@ -54,5 +54,15 @@ func TestSDKLoadsManagedModelContextAndTimeout(t *testing.T) {
 	}
 	if got.LlmProvider.Model != "gpt-test" || got.LlmProvider.Name != "openai" {
 		t.Fatal("SDK replaced configured model")
+	}
+	if got.Models.Active["chat"] != cfg.Model || got.Models.Active["compact"] != cfg.Model || got.Context.CompactModel != cfg.Model {
+		t.Fatal("SDK selected a different model for chat or compaction")
+	}
+	chat, compact := got.Models.Endpoints["chat"], got.Models.Endpoints["compact"]
+	if chat.Provider != cfg.Provider || compact.Provider != cfg.Provider || chat.APIBase != cfg.APIBase || compact.APIBase != cfg.APIBase || chat.APIKey != cfg.APIKey || compact.APIKey != cfg.APIKey {
+		t.Fatal("SDK replaced the configured chat or compaction endpoint")
+	}
+	if runner.agent.HomeDir() != cfg.HomeDir {
+		t.Fatal("SDK is using a different runtime home")
 	}
 }

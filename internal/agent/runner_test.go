@@ -7,7 +7,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
-	"github.com/yurika0211/luckyagent/sdk"
+	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
 func TestPromptUsesReviewTools(t *testing.T) {
@@ -137,11 +137,11 @@ func TestSetSessionWorkingDir(t *testing.T) {
 	if err := setSessionWorkingDir(agent, sessionID, dir); err != nil {
 		t.Fatalf("setSessionWorkingDir: %v", err)
 	}
-	sess, ok := agent.Underlying().Sessions().Get(sessionID)
-	if !ok || sess == nil {
-		t.Fatal("session missing")
+	sess, err := agent.GetSession(sessionID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
 	}
-	if got := sess.GetCwd(); got != dir {
+	if got := sess.WorkingDir; got != dir {
 		t.Fatalf("cwd = %q, want %q", got, dir)
 	}
 }

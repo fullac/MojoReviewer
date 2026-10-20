@@ -51,7 +51,7 @@ internal/config/config.go    .MojoReviewer/config.json
 config.example.json          可提交的配置样例（无真实密钥）
 ```
 
-模块是 `github.com/mojoreviewer/mojoreviewer`。LuckyAgent 用 `replace` 指到 `../luckyagent`。
+模块是 `github.com/mojoreviewer/mojoreviewer`。通过 `github.com/yurika0211/luckyagent-app/sdk` 进程内嵌 LuckyAgent，`go.mod` 固定公开版本，`go.sum` 校验依赖；构建不依赖相邻源码目录。不要重新引入旧的 `github.com/yurika0211/luckyagent/sdk` 或提交机器路径 replace。
 
 ## 一次审查
 
@@ -119,12 +119,12 @@ config.example.json          可提交的配置样例（无真实密钥）
 ## 验证
 
 ```bash
-go test ./...
-go vet ./...
-go build -o /tmp/mojoreviewer ./cmd/mojoreviewer
+GOWORK=off go test -mod=readonly -race ./...
+GOWORK=off go vet -mod=readonly ./...
+GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ```
 
-向 `main` 开非草稿 PR 会触发 `.github/workflows/ci.yml` 做同样检查。CI 会把 `yurika0211/lucky-agent` 检到仓库旁的 `luckyagent/`，对齐 `go.mod` 的 `replace`。
+向 `main` 开非草稿 PR 会触发 `.github/workflows/ci.yml`，仅检出 MojoReviewer，从公开模块下载固定依赖，关闭 workspace 并做模块校验、上述 Go 检查及 Python 管理器测试。升级依赖时用 `GOWORK=off go list -mod=readonly -m all` 核对实际选中版本。
 
 改 diff、路径范围或 webhook 解析时，补对应包的测试。涉及检出的测试用 `t.TempDir()` 里的本地 git 仓库，不要打到 GitHub。
 
