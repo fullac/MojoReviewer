@@ -22,6 +22,8 @@ func TestParseIntent(t *testing.T) {
 		{"请 @mojo 看看登录逻辑", "mojo", IntentReview, "登录逻辑", ""},
 		{"@mojo patch timeout", "mojo", IntentFix, "", "timeout"},
 		{"@mojo memo keep base ref pinned", "mojo", IntentRemember, "", "keep base ref pinned"},
+		{"@mojo fix 保留 @mojo-bot", "mojo", IntentFix, "", "保留 @mojo-bot"},
+		{"@mojo remember 邮箱 mail@mojo.example", "mojo", IntentRemember, "", "邮箱 mail@mojo.example"},
 	}
 	for _, tc := range cases {
 		got, rest := ParseIntent(tc.body, tc.trigger)

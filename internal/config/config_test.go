@@ -2,7 +2,7 @@ package config
 
 import (
 	"bytes"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -87,8 +87,9 @@ func TestLoadWarnsOnInvalidGitHubHost(t *testing.T) {
 	t.Chdir(dir)
 	writeConfig(t, `{"github":{"host":"https://ghe.example.com","webhook_secret":"hook"},"agent":{"api_key":"sk-test"}}`)
 	var buf bytes.Buffer
-	log.SetOutput(&buf)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -174,5 +175,20 @@ func TestManagedContextAndRequestTimeout(t *testing.T) {
 			t.Fatal("invalid limit accepted")
 		}
 
+	}
+}
+
+func TestLogLevelValidation(t *testing.T) {
+	t.Chdir(t.TempDir())
+	for _, level := range []string{"debug", "info", "warn", "error", " DEBUG "} {
+		writeConfig(t, `{"log_level":"`+level+`","agent":{"api_key":"fixture"},"github":{"webhook_secret":"fixture"}}`)
+		cfg, err := Load()
+		if err != nil || cfg.LogLevel != strings.ToLower(strings.TrimSpace(level)) {
+			t.Fatalf("level=%q normalized=%q err=%v", level, cfg.LogLevel, err)
+		}
+	}
+	writeConfig(t, `{"log_level":"trace","agent":{"api_key":"fixture"},"github":{"webhook_secret":"fixture"}}`)
+	if _, err := Load(); err == nil {
+		t.Fatal("invalid log_level accepted")
 	}
 }

@@ -22,7 +22,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	specs := []sdk.ToolSpec{
 		{
 			Name:        "pr_diff_stat",
-			Description: "分页返回 PR 文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
+			Description: "分页返回 PR 相对 refs/review/merge-base 的文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
 			Parameters: map[string]sdk.ToolParam{
 				"offset": {Type: "number", Description: "从第几个文件开始，0-based，默认 0"},
 				"limit":  {Type: "number", Description: "每页文件数，默认 50，最多 200"},
@@ -33,7 +33,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 		},
 		{
 			Name:        "pr_file_diff",
-			Description: "只返回一个文件相对 refs/review/base 的 patch。用它代替把整份 diff 塞进上下文。",
+			Description: "只返回一个文件相对 refs/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
 			Parameters: map[string]sdk.ToolParam{
 				"path": {Type: "string", Description: "检出内的相对路径", Required: true},
 			},

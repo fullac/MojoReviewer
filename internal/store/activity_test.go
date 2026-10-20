@@ -63,4 +63,7 @@ func TestStartupInterruptsOnlyUnfinishedAttempts(t *testing.T) {
 	if seen, err := s.HasActivity("running"); err != nil || !seen {
 		t.Fatal("transport receipt lost", err)
 	}
+	if seen, err := s.HasActivity("queued"); err != nil || seen {
+		t.Fatal("unstarted transport must remain redeliverable", err)
+	}
 }

@@ -16,6 +16,7 @@ func TestStatPagesCoverLargeFileMap(t *testing.T) {
 	run(t, dir, "git", "config", "user.email", "test@example.com")
 	run(t, dir, "git", "commit", "--allow-empty", "-m", "base")
 	run(t, dir, "git", "update-ref", baseRef, "HEAD")
+	run(t, dir, "git", "update-ref", mergeBaseRef, "HEAD")
 	prefix := strings.Repeat("directory", 22)
 	if err := os.Mkdir(filepath.Join(dir, prefix), 0o755); err != nil {
 		t.Fatal(err)

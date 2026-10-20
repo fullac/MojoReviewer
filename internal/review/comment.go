@@ -8,18 +8,21 @@ import (
 	"strings"
 )
 
-// PostComment 用 gh 把审查评论发到 PR。评论固定带 BotPrefix，且不包含命令输出原文以外的调用方内容。
+// PostComment 检查评论中的凭据后用 gh 发到 PR，正文固定带 BotPrefix。
 // host 非空时写入 GH_HOST，和 ResolveComment 使用同一个 GitHub 主机。
-func PostComment(repo string, number int, body, host string) error {
-	_, err := PostCommentURL(repo, number, body, host)
+func PostComment(repo string, number int, body, host string, secrets ...string) error {
+	_, err := PostCommentURL(repo, number, body, host, secrets...)
 	return err
 }
 
 // PostCommentURL returns gh's publication receipt after a successful command.
-func PostCommentURL(repo string, number int, body, host string) (string, error) {
+func PostCommentURL(repo string, number int, body, host string, secrets ...string) (string, error) {
 	body = strings.TrimSpace(body)
 	if body == "" {
 		return "", fmt.Errorf("评论为空")
+	}
+	if err := ValidateComment(body, secrets...); err != nil {
+		return "", err
 	}
 	if !strings.HasPrefix(body, BotPrefix) {
 		body = BotPrefix + "\n\n" + body

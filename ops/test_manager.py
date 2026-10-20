@@ -153,6 +153,26 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse(self.m.eligible("issue_comment", payload, current))
         payload["comment"]["body"] = "no trigger"
         self.assertFalse(self.m.eligible("issue_comment", payload, current))
+        for comment in ("@reviewer-bot review", "@reviewer2", "@reviewer_team", "mail@reviewer.example", "@@reviewer", "@reviewer/team"):
+            payload["comment"]["body"] = comment
+            self.assertFalse(self.m.eligible("issue_comment", payload, current), comment)
+        for comment in ("@REVIEWER: review", "请@reviewer，看看", "(@reviewer)."):
+            payload["comment"]["body"] = comment
+            self.assertTrue(self.m.eligible("issue_comment", payload, current), comment)
+
+    def test_ready_for_review_replay_and_attempted_head_history(self):
+        pr = {"number": 7, "state": "open", "head": {"sha": "A"},
+              "base": {"repo": {"clone_url": "https://example.test/acme/web.git"}}}
+        payload = {"action": "ready_for_review", "pull_request": pr}
+        self.assertTrue(self.m.eligible("pull_request", payload, {7: pr}))
+        pr["draft"] = True
+        self.assertFalse(self.m.eligible("pull_request", payload, {7: pr}))
+        pr["draft"] = False
+        atomic_json(self.root / "data/reviews.json", {"acme/web#7": {"head_sha": "B", "auto_heads": ["A", "B"]}})
+        self.m.pages = Mock(side_effect=lambda url: [] if "deliveries" in url else [pr])
+        self.m.signed = Mock()
+        self.m.reconcile()
+        self.m.signed.assert_not_called()
 
     def test_manual_retry_is_local_and_does_not_post_github_comment(self):
         self.m.phase = "running"
@@ -161,6 +181,52 @@ class ManagerTests(unittest.TestCase):
         self.m.execute("retry", {"repo": "acme/web", "number": 7})
         self.assertEqual(self.m.signed.call_args.args[1], "issue_comment")
         self.m.gh.assert_not_called()
+
+    def test_manual_retry_normalizes_trigger_and_matches_replay_parser(self):
+        self.m.phase = "running"
+        self.m.cfg["github"]["trigger_user"] = " @reviewer "
+        self.m.signed = Mock(return_value=(202, "queued"))
+        self.m.execute("retry", {"repo": "acme/web", "number": 7})
+        payload = self.m.signed.call_args.args[2]
+        self.assertTrue(payload["comment"]["body"].startswith("@reviewer "))
+        self.assertNotIn("@@", payload["comment"]["body"])
+        self.assertTrue(self.m.eligible("issue_comment", payload, {7: {}}))
+
+    def test_replay_recovers_accepted_unstarted_comment_with_existing_head(self):
+        pr = {"number": 7, "state": "open", "draft": False, "head": {"sha": "A"},
+              "base": {"repo": {"clone_url": "https://example.test/acme/web.git"}}}
+        records = {"acme/web#7": {"head_sha": "A", "auto_heads": ["A"]}}
+        activity = [{"id": "github:comment-queued", "state": "interrupted", "stage": "queued",
+                     "repo": "acme/web", "number": 7}]
+        deliveries = [{"guid": "comment-queued", "event": "issue_comment", "id": 123, "status_code": 202},
+                      {"guid": "comment-queued", "event": "issue_comment", "id": 124, "status_code": 503}]
+        self.m.record_data = Mock(return_value=(records, activity))
+        self.m.pages = Mock(side_effect=lambda url: deliveries if "deliveries" in url else [pr])
+        payload = {"action": "created", "issue": {"number": 7, "pull_request": {"url": "x"}},
+                   "comment": {"body": "@reviewer review focus on caller"}}
+        self.m.gh = Mock(side_effect=lambda url, method="GET", body=None:
+                         None if method == "POST" else {"request": {"payload": payload}})
+        self.m.signed = Mock()
+        self.m.reconcile()
+        posts = lambda: [c.args[0] for c in self.m.gh.call_args_list if len(c.args) > 1 and c.args[1] == "POST"]
+        self.assertEqual(posts(), ["repos/acme/web/hooks/42/deliveries/123/attempts"])
+        self.m.signed.assert_not_called()
+        # The same recovery still observes the existing interval and retry cap.
+        self.m.reconcile()
+        self.assertEqual(len(posts()), 1)
+        for _ in range(2):
+            self.m.state["replays"]["acme/web:comment-queued"]["time"] = time.time() - 121
+            self.m.reconcile()
+        self.m.state["replays"]["acme/web:comment-queued"]["time"] = time.time() - 121
+        self.m.reconcile()
+        self.assertEqual(len(posts()), 3)
+        # Already-started or terminal attempts must not become automatic retries.
+        for state, stage in (("interrupted", "shutdown"), ("failed", "model"), ("completed", "published")):
+            activity[0].update(state=state, stage=stage)
+            self.m.state["replays"] = {}
+            self.m.gh.reset_mock()
+            self.m.reconcile()
+            self.m.gh.assert_not_called()
 
     def test_pages_preserve_cursor_and_large_integer(self):
         self.m.token = Mock(return_value="private-token")

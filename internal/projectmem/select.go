@@ -1,6 +1,7 @@
 package projectmem
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -51,19 +52,19 @@ func SelectKnowledgeFiles(root string, maxFiles, maxFileBytes int) ([]Candidate,
 	if maxFileBytes <= 0 {
 		maxFileBytes = 64 << 10
 	}
-	root = filepath.Clean(root)
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return nil, err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return nil, err
+	}
 	seen := map[string]struct{}{}
 	var out []Candidate
 
 	add := func(abs string) {
 		if len(out) >= maxFiles {
-			return
-		}
-		info, err := os.Stat(abs)
-		if err != nil || info.IsDir() {
-			return
-		}
-		if info.Size() <= 0 || info.Size() > int64(maxFileBytes) {
 			return
 		}
 		rel, err := filepath.Rel(root, abs)
@@ -75,6 +76,10 @@ func SelectKnowledgeFiles(root string, maxFiles, maxFileBytes int) ([]Candidate,
 			return
 		}
 		if shouldSkipPath(rel) {
+			return
+		}
+		_, info, err := resolveKnowledgeFile(root, rel)
+		if err != nil || info.Size() <= 0 || info.Size() > int64(maxFileBytes) {
 			return
 		}
 		key := strings.ToLower(rel)
@@ -145,6 +150,46 @@ func SelectKnowledgeFiles(root string, maxFiles, maxFileBytes int) ([]Candidate,
 		out = out[:maxFiles]
 	}
 	return out, nil
+}
+
+// resolveKnowledgeFile is shared by selection and the final indexing read.
+// Keep internal symlinks, but require their resolved target to be an ordinary
+// file in this checkout and apply the sensitive-path exclusions to that target.
+func resolveKnowledgeFile(root, rel string) (string, os.FileInfo, error) {
+	if filepath.IsAbs(rel) {
+		return "", nil, fmt.Errorf("项目文档路径必须相对检出")
+	}
+	root, err := filepath.Abs(root)
+	if err != nil {
+		return "", nil, err
+	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", nil, err
+	}
+	cleanRel := filepath.Clean(filepath.FromSlash(rel))
+	if cleanRel == ".." || strings.HasPrefix(cleanRel, ".."+string(filepath.Separator)) || shouldSkipPath(cleanRel) {
+		return "", nil, fmt.Errorf("项目文档路径不允许索引")
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Join(root, cleanRel))
+	if err != nil {
+		return "", nil, err
+	}
+	realRel, err := filepath.Rel(root, resolved)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) || filepath.IsAbs(realRel) {
+		return "", nil, fmt.Errorf("项目文档符号链接超出检出")
+	}
+	if shouldSkipPath(filepath.ToSlash(realRel)) {
+		return "", nil, fmt.Errorf("项目文档目标不允许索引")
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", nil, fmt.Errorf("项目文档不是普通文件")
+	}
+	return resolved, info, nil
 }
 
 func shouldSkipPath(rel string) bool {

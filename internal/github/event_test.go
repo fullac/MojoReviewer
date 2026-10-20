@@ -1,6 +1,53 @@
 package github
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
+
+func TestReadyForReview(t *testing.T) {
+	for _, draft := range []bool{false, true} {
+		body, err := json.Marshal(map[string]any{
+			"action": "ready_for_review", "repository": map[string]string{"full_name": "acme/web"},
+			"pull_request": map[string]any{"number": 7, "draft": draft, "head": map[string]string{"sha": "head"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := ParseWebhook("pull_request", body, "mojo", nil)
+		if err != nil || (got == nil) != draft {
+			t.Fatalf("draft=%v review=%+v err=%v", draft, got, err)
+		}
+	}
+}
+
+func TestCommentMentionsWholeAccount(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{"@mojo", true}, {"@MOJO: review", true}, {"请@mojo，看看", true},
+		{"(@mojo).", true}, {"@mojo-bot review", false}, {"@mojo2 review", false},
+		{"@mojo_review", false}, {"mail@mojo.example", false}, {"mail+@mojo", false},
+		{"@@mojo review", false}, {"@mojo/team review", false},
+		{"@mojo-bot 看一下，然后 @mojo review", true},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			body, err := json.Marshal(map[string]any{
+				"action": "created", "repository": map[string]string{"full_name": "acme/web"},
+				"issue":   map[string]any{"number": 7, "pull_request": map[string]string{"url": "x"}},
+				"comment": map[string]string{"body": tc.body},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := ParseWebhook("issue_comment", body, "@mojo", nil)
+			if err != nil || (got != nil) != tc.want {
+				t.Fatalf("review=%+v err=%v want=%v", got, err, tc.want)
+			}
+		})
+	}
+}
 
 func TestParsePullRequestSynchronize(t *testing.T) {
 	body := []byte(`{
