@@ -58,6 +58,7 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 	run(t, dir, "git", "add", ".")
 	run(t, dir, "git", "commit", "-m", "head")
 	run(t, dir, "git", "update-ref", baseRef, base)
+	run(t, dir, "git", "update-ref", mergeBaseRef, base)
 
 	scope := ToolScope{Dir: dir}
 	stat, err := scope.Stat()

@@ -28,10 +28,15 @@ type recordingRunner struct {
 	fixEnabled   bool
 	reviewResult *agent.ReviewResult
 	reviewErr    error
+	onReview     func()
+	onFix        func()
 }
 
 func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
 	r.inputs = append(r.inputs, input)
+	if r.onReview != nil {
+		r.onReview()
+	}
 	if r.reviewResult != nil {
 		return *r.reviewResult, r.reviewErr
 	}
@@ -40,6 +45,9 @@ func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (ag
 
 func (r *recordingRunner) Fix(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
 	r.fixInputs = append(r.fixInputs, input)
+	if r.onFix != nil {
+		r.onFix()
+	}
 	return agent.ReviewResult{SessionID: "fix-session", Text: "已改超时配置"}, nil
 }
 
@@ -218,9 +226,9 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	if len(activities) != 2 || activities[1].State != "completed" || activities[1].Stage != "published" {
 		t.Fatalf("publication not recorded: %s", raw)
 	}
-	if err := os.WriteFile(filepath.Join(filepath.Dir(apiPath), "gh"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
-		t.Fatal(err)
-	}
+	// An explicit request may retry the same head; only publication fails here.
+	item.Comment = "@mojo review 再审"
+	t.Setenv("MOJO_TEST_POST_FAILURE", "1")
 	s.runOne(context.Background(), item)
 	raw, _ = os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
 	if err := json.Unmarshal(raw, &activities); err != nil {

@@ -49,11 +49,11 @@ func (s ToolScope) StatPage(offset, limit int) (string, error) {
 	if limit > 200 {
 		limit = 200
 	}
-	out, err := gitOutput(s.Dir, "diff", "--numstat", "--no-renames", "-z", baseRef, "HEAD")
+	out, err := gitOutput(s.Dir, "diff", "--numstat", "--no-renames", "-z", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
-	patch, patchErr := gitOutput(s.Dir, "diff", "--patch", baseRef, "HEAD")
+	patch, patchErr := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD")
 	if patchErr != nil {
 		return "", patchErr
 	}
@@ -93,19 +93,19 @@ func (s ToolScope) StatPage(offset, limit int) (string, error) {
 	return header + strings.TrimSuffix(page.String(), "\n"), nil
 }
 
-// FileDiff 只返回一个文件相对 refs/review/base 的 patch。
+// FileDiff 只返回一个文件相对 refs/review/merge-base 的 patch。
 func (s ToolScope) FileDiff(path string) (string, error) {
 	rel, err := s.clean(path)
 	if err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--patch", baseRef, "HEAD", "--", rel)
+	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", rel)
 	if err != nil {
 		return "", err
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return fmt.Sprintf("（%s 相对 %s 没有差异）", rel, baseRef), nil
+		return fmt.Sprintf("（%s 相对 %s 没有差异）", rel, mergeBaseRef), nil
 	}
 	return clip(out, maxFileDiff), nil
 }
@@ -192,12 +192,16 @@ func (s ToolScope) ChangedSymbols() (string, error) {
 	if err := s.require(); err != nil {
 		return "", err
 	}
-	names, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", baseRef, "HEAD")
+	names, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
 	var hits []string
 	for _, rel := range splitLines(names) {
+		rel, err := s.clean(rel)
+		if err != nil {
+			continue
+		}
 		hunks, err := changedLines(s.Dir, rel)
 		if err != nil || len(hunks) == 0 {
 			continue
@@ -217,6 +221,9 @@ func (s ToolScope) ChangedSymbols() (string, error) {
 // TestsAround 列出与改动文件同目录、父目录或测试命名对应的测试文件。
 // path 为空时，用本次 diff 的全部改动文件做种子。
 func (s ToolScope) TestsAround(path string) (string, error) {
+	if err := s.require(); err != nil {
+		return "", err
+	}
 	var seeds []string
 	if strings.TrimSpace(path) != "" {
 		rel, err := s.clean(path)
@@ -225,7 +232,7 @@ func (s ToolScope) TestsAround(path string) (string, error) {
 		}
 		seeds = append(seeds, rel)
 	}
-	changed, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", baseRef, "HEAD")
+	changed, err := gitOutput(s.Dir, "diff", "--name-only", "--diff-filter=ACMR", mergeBaseRef, "HEAD")
 	if err != nil {
 		return "", err
 	}
@@ -233,8 +240,16 @@ func (s ToolScope) TestsAround(path string) (string, error) {
 	seen := map[string]bool{}
 	var hits []string
 	for _, seed := range seeds {
+		seed, err := s.clean(seed)
+		if err != nil {
+			continue
+		}
 		for _, candidate := range testCandidates(s.Dir, seed) {
 			if seen[candidate] {
+				continue
+			}
+			candidate, err = s.clean(candidate)
+			if err != nil {
 				continue
 			}
 			info, err := os.Stat(filepath.Join(s.Dir, candidate))
@@ -278,7 +293,8 @@ func (s ToolScope) require() error {
 	return nil
 }
 
-// clean 把模型给的路径收成检出内的相对路径，拒绝 .. 和检出外的绝对路径。
+// clean 把路径收成检出内的相对路径，同时拒绝通过符号链接逃出检出。
+// 文件已删除时检查最近的已有父目录，仍允许读取它的 Git patch。
 func (s ToolScope) clean(path string) (string, error) {
 	if err := s.require(); err != nil {
 		return "", err
@@ -304,11 +320,32 @@ func (s ToolScope) clean(path string) (string, error) {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("路径超出本次检出: %s", path)
 	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("无法解析审查目录")
+	}
+	existing := abs
+	for {
+		if _, err := os.Lstat(existing); err == nil {
+			break
+		} else if !os.IsNotExist(err) || existing == root {
+			return "", fmt.Errorf("无法检查检出内路径: %s", path)
+		}
+		existing = filepath.Dir(existing)
+	}
+	resolved, err := filepath.EvalSymlinks(existing)
+	if err != nil {
+		return "", fmt.Errorf("无法解析检出内路径: %s", path)
+	}
+	realRel, err := filepath.Rel(realRoot, resolved)
+	if err != nil || realRel == ".." || strings.HasPrefix(realRel, ".."+string(filepath.Separator)) || filepath.IsAbs(realRel) {
+		return "", fmt.Errorf("符号链接超出本次检出: %s", path)
+	}
 	return rel, nil
 }
 
 func changedLines(dir, rel string) ([][2]int, error) {
-	out, err := gitOutput(dir, "diff", "-U0", baseRef, "HEAD", "--", rel)
+	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", rel)
 	if err != nil {
 		return nil, err
 	}

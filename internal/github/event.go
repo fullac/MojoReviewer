@@ -30,7 +30,7 @@ type Review struct {
 }
 
 // ParseWebhook 把 GitHub pull_request 和 issue_comment 转成审查任务。
-// 只处理 opened、reopened、synchronize，以及 @触发用户 的 PR 评论。
+// 只处理 opened、reopened、synchronize、ready_for_review，以及 @触发用户 的 PR 评论。
 func ParseWebhook(event string, body []byte, triggerUser string, allowed map[string]bool) (*Review, error) {
 	switch event {
 	case "pull_request":
@@ -63,7 +63,7 @@ func parsePullRequest(body []byte, allowed map[string]bool) (*Review, error) {
 		return nil, fmt.Errorf("解析 pull_request: %w", err)
 	}
 	switch payload.Action {
-	case "opened", "reopened", "synchronize":
+	case "opened", "reopened", "synchronize", "ready_for_review":
 	default:
 		return nil, nil
 	}
@@ -156,7 +156,37 @@ func newReview(repository repo, number int, title, body, author, htmlURL string,
 }
 
 func mentions(body, user string) bool {
-	return strings.Contains(strings.ToLower(body), "@"+strings.ToLower(user))
+	start, _ := mentionRange(body, user)
+	return start >= 0
+}
+
+// mentionRange matches an entire account mention, excluding longer logins and
+// email addresses. Chinese text and punctuation may touch a mention directly.
+func mentionRange(body, user string) (int, int) {
+	user = strings.TrimPrefix(strings.TrimSpace(user), "@")
+	if user == "" {
+		return -1, -1
+	}
+	mention := "@" + user
+	for offset := 0; offset < len(body); {
+		idx := strings.IndexByte(body[offset:], '@')
+		if idx < 0 {
+			break
+		}
+		start := offset + idx
+		end := start + len(mention)
+		if end <= len(body) && strings.EqualFold(body[start:end], mention) &&
+			(start == 0 || !mentionWord(body[start-1]) && !strings.ContainsRune(".+@", rune(body[start-1]))) &&
+			(end == len(body) || !mentionWord(body[end]) && body[end] != '/' && body[end] != '@') {
+			return start, end
+		}
+		offset = start + 1
+	}
+	return -1, -1
+}
+
+func mentionWord(c byte) bool {
+	return c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_'
 }
 
 func isBotComment(body string) bool {

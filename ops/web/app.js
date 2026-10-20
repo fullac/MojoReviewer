@@ -3,7 +3,7 @@ let state = {
 }, loadedConfig = false, busy = false;
 const $ = selector => document.querySelector(selector);
 const labels = {
-  stopped:'服务已停止',starting:'正在启动',running:'服务运行中',recovering:'正在恢复入口',error:'等待恢复',queued:'排队中',running_review:'审查中',completed:'已发布',failed:'失败',interrupted:'已中断'
+  stopped:'服务已停止',starting:'正在启动',running:'服务运行中',recovering:'正在恢复入口',error:'等待恢复',queued:'排队中',running_review:'审查中',completed:'已发布',failed:'失败',interrupted:'已中断',skipped:'已跳过'
 };
 function message(text, bad=false) {
   const el=$('#message');

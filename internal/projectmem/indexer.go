@@ -55,8 +55,9 @@ func (idx *Indexer) ensure(ctx context.Context, repo, workDir, headSHA string) e
 	}
 	changed := 0
 	for _, c := range cands {
-		abs := filepath.Join(workDir, filepath.FromSlash(c.Rel))
-		info, err := os.Stat(abs)
+		// Revalidate immediately before reading; selection alone must not let
+		// a subsequently replaced symlink point the indexer outside this checkout.
+		abs, info, err := resolveKnowledgeFile(workDir, c.Rel)
 		if err != nil {
 			continue
 		}

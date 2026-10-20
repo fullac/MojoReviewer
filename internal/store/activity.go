@@ -52,19 +52,7 @@ func (s *Store) Activity(a Activity) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".activity-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err = tmp.Write(raw); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err = tmp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicWrite(path, raw)
 }
 
 // HasActivity makes transport retries of a GitHub delivery idempotent, including
@@ -85,6 +73,10 @@ func (s *Store) HasActivity(id string) (bool, error) {
 	}
 	for _, row := range rows {
 		if row.ID == id {
+			// A queued attempt never started and may be redelivered after restart.
+			if row.State == "interrupted" && row.Stage == "queued" {
+				return false, nil
+			}
 			return true, nil
 		}
 	}
@@ -110,8 +102,12 @@ func (s *Store) InterruptActivities() error {
 	}
 	for _, a := range rows {
 		if a.State == "queued" || a.State == "running" {
+			stage := "shutdown"
+			if a.State == "queued" {
+				stage = "queued"
+			}
 			a.State = "interrupted"
-			a.Stage = "shutdown"
+			a.Stage = stage
 			if err := s.Activity(a); err != nil {
 				return err
 			}

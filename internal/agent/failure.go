@@ -22,7 +22,7 @@ type ReviewFailure struct {
 func (f *ReviewFailure) Error() string { return f.Reason }
 func (f *ReviewFailure) Unwrap() error { return f.cause }
 
-func reviewResult(sessionID, text string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
+func reviewResult(sessionID, _ string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
 	result := ReviewResult{SessionID: sessionID}
 	if notes.Len() > 0 {
 		result.Text = notes.Render()
@@ -30,7 +30,7 @@ func reviewResult(sessionID, text string, notes *review.Notes, progress *readPro
 	}
 	if err == nil {
 		if !result.Noted {
-			result.Text = strings.TrimSpace(text)
+			result.Text = notes.Render() + "\n\n本轮未记录审查意见；这不代表所有改动均已核实。"
 		}
 		return result, nil
 	}

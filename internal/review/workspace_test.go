@@ -52,6 +52,9 @@ func TestPrepareChecksOutHeadSHA(t *testing.T) {
 	if mergeBase != base {
 		t.Fatalf("merge-base 为 %s，期望 %s", mergeBase, base)
 	}
+	if got := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", mergeBaseRef)); got != base {
+		t.Fatalf("固定共同祖先为 %s，期望 %s", got, base)
+	}
 	diff, err := Diff(ws.Dir, base)
 	if err != nil {
 		t.Fatal(err)

@@ -291,13 +291,15 @@ class Manager:
         activities = read_json(directory / "activity.json", [])
         for item in activities:
             if item.get("state") in ("queued", "running") and not self.children.get("reviewer"):
+                if item["state"] == "queued":
+                    item["stage"] = "queued"
                 item["state"] = "interrupted"
         return records, activities
 
     def reconcile(self):
-        """Replay eligible failed deliveries; recover unseen open PR heads, including old outages."""
+        """Replay failed/unstarted deliveries and recover unseen open PR heads."""
         self.last_reconcile = time.monotonic()
-        records, _ = self.record_data()
+        records, activities = self.record_data()
         replays = self.state.setdefault("replays", {})
         for repo, hook in self.cfg.get("manager", {}).get("hooks", {}).items():
             if self.exit.is_set() or self.command is not None:
@@ -305,13 +307,16 @@ class Manager:
             prs = self.pages(f"repos/{repo}/pulls")
             current = {pr["number"]: pr for pr in prs if pr.get("state") == "open" and not pr.get("draft")}
             deliveries = self.pages(f"repos/{repo}/hooks/{int(hook)}/deliveries")
+            unstarted = {a["id"].removeprefix("github:") for a in activities
+                         if a.get("repo") == repo and a.get("state") == "interrupted"
+                         and a.get("stage") == "queued" and a.get("id", "").startswith("github:")}
             succeeded = {d["guid"] for d in deliveries if 200 <= (d.get("status_code") or 0) < 300}
             seen = set()
             for delivery in deliveries:
                 if self.exit.is_set() or self.command is not None:
                     return
                 guid = delivery["guid"]
-                if guid in succeeded or guid in seen or delivery.get("event") not in ("pull_request", "issue_comment"):
+                if (guid in succeeded and guid not in unstarted) or guid in seen or delivery.get("event") not in ("pull_request", "issue_comment"):
                     continue
                 seen.add(guid)
                 key = repo + ":" + guid
@@ -330,11 +335,13 @@ class Manager:
                     del replays[min(replays, key=lambda k: replays[k]["time"])]
                 atomic_json(self.state_path, self.state)
                 self.gh(f"repos/{repo}/hooks/{int(hook)}/deliveries/{int(delivery['id'])}/attempts", "POST")
-                self.log(f"已请求补送 {repo} 的失败 {delivery['event']} 事件")
+                self.log(f"已请求补送 {repo} 的失败或未启动 {delivery['event']} 事件")
             for number, pr in current.items():
                 if self.exit.is_set() or self.command is not None:
                     return
-                if records.get(f"{repo}#{number}", {}).get("head_sha") == pr["head"]["sha"]:
+                record = records.get(f"{repo}#{number}", {})
+                auto_heads = record.get("auto_heads")
+                if pr["head"]["sha"] in (auto_heads if auto_heads is not None else [record.get("head_sha")]):
                     continue
                 # Signed local delivery respects the reviewer's queue/deduplication/allow-list.
                 payload = {"action": "synchronize", "pull_request": pr,
@@ -352,13 +359,14 @@ class Manager:
         if event == "pull_request":
             pr = payload.get("pull_request", {})
             now = current.get(pr.get("number"))
-            return bool(now and payload.get("action") in ("opened", "reopened", "synchronize")
+            return bool(now and payload.get("action") in ("opened", "reopened", "synchronize", "ready_for_review")
                         and not pr.get("draft") and pr.get("head", {}).get("sha") == now["head"]["sha"])
         comment = payload.get("comment", {}).get("body", "")
-        trigger = self.cfg.get("github", {}).get("trigger_user", "").lstrip("@")
+        trigger = self.cfg.get("github", {}).get("trigger_user", "").strip().removeprefix("@")
         return bool(payload.get("action") == "created" and payload.get("issue", {}).get("number") in current
                     and payload.get("issue", {}).get("pull_request") and trigger
-                    and ("@" + trigger).lower() in comment.lower()
+                    and re.search(r"(?<![A-Za-z0-9_.+@-])@" + re.escape(trigger) + r"(?![A-Za-z0-9_/@-])",
+                                  comment, re.IGNORECASE | re.ASCII)
                     and not comment.lstrip().startswith("【MojoReviewer】"))
 
     def request_action(self, action, body):
@@ -395,7 +403,7 @@ class Manager:
         elif action == "retry":
             if self.phase != "running":
                 raise ValueError("请先启动服务")
-            trigger = self.cfg.get("github", {}).get("trigger_user", "")
+            trigger = self.cfg.get("github", {}).get("trigger_user", "").strip().removeprefix("@")
             if not trigger:
                 raise ValueError("请先配置 trigger_user")
             status, _ = self.signed(self.local_url(), "issue_comment", {

@@ -8,19 +8,22 @@ import (
 
 const maxDiffBytes = 16_000
 
-// Diff 读取当前检出相对 base 的代码差异（调试/测试用）。
+// Diff 读取当前检出相对已固定共同祖先的代码差异（调试/测试用）。
+// 调用方须先用同一 baseSHA 完成 PrepareWithBase；这里不再 fetch 或改动基线。
 // 审查主路径不再把返回值写入 prompt；模型应通过 pr_diff_stat / pr_file_diff 按需读取（issue #21）。
 // 失败时返回说明，不让调用方因 diff 命令中断。
 func Diff(dir, baseSHA string) (string, error) {
 	if strings.TrimSpace(baseSHA) == "" {
 		return "", fmt.Errorf("缺少 base SHA")
 	}
-	// Keep the base history reachable so a later merge-base or triple-dot
-	// comparison cannot be defeated by a shallow boundary at baseSHA.
-	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", baseSHA+":"+baseRef); err != nil {
+	pinnedBase, err := gitOutput(dir, "rev-parse", "--verify", baseRef)
+	if err != nil {
 		return "", err
 	}
-	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", baseRef, "HEAD")
+	if strings.TrimSpace(pinnedBase) != strings.TrimSpace(baseSHA) {
+		return "", fmt.Errorf("base SHA 与已准备的检出不一致")
+	}
+	cmd := exec.Command("git", "-C", dir, "diff", "--stat", "--patch", mergeBaseRef, "HEAD")
 	out, err := cmd.CombinedOutput()
 	text := strings.TrimSpace(string(out))
 	if err != nil {

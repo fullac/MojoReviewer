@@ -22,19 +22,15 @@ func ParseIntent(comment, triggerUser string) (Intent, string) {
 		return IntentReview, ""
 	}
 	triggerUser = strings.TrimPrefix(strings.TrimSpace(triggerUser), "@")
-	lower := strings.ToLower(text)
 
 	// 去掉所有 @trigger 提及，方便取命令词。
 	if triggerUser != "" {
-		mention := "@" + strings.ToLower(triggerUser)
 		for {
-			idx := strings.Index(lower, mention)
+			idx, end := mentionRange(text, triggerUser)
 			if idx < 0 {
 				break
 			}
-			end := idx + len(mention)
 			text = strings.TrimSpace(text[:idx] + text[end:])
-			lower = strings.ToLower(text)
 		}
 	}
 

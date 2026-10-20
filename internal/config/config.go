@@ -3,7 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,6 +120,12 @@ func Load() (Config, error) {
 }
 
 func normalize(file fileConfig) (Config, error) {
+	logLevel := strings.ToLower(fallback(file.LogLevel, "info"))
+	switch logLevel {
+	case "debug", "info", "warn", "error":
+	default:
+		return Config{}, fmt.Errorf("log_level 必须是 debug、info、warn 或 error")
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		home = "."
@@ -154,7 +160,7 @@ func normalize(file fileConfig) (Config, error) {
 		agentHome = filepath.Join(dataDir, "luckyagent")
 	}
 	cfg := Config{
-		LogLevel: fallback(file.LogLevel, "info"),
+		LogLevel: logLevel,
 		DataDir:  dataDir,
 		Server: ServerConfig{
 			Host: fallback(file.Server.Host, "127.0.0.1"),
@@ -203,7 +209,7 @@ func githubHost(value string) string {
 	if raw == "" || !strings.ContainsAny(raw, " \t/\\:@") {
 		return raw
 	}
-	log.Printf("github.host %q 不是主机名，已忽略，将沿用 gh 的默认主机", raw)
+	slog.Warn("github.host 不是主机名，已忽略，将沿用 gh 的默认主机", "host", raw)
 	return ""
 }
 

@@ -19,8 +19,8 @@ func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace,
 	return prepare(dataDir, repo, cloneURL, sha, sessionKey, "", "")
 }
 
-// PrepareWithBase 准备 PR head，并把 PR base 固定到 refs/review/base。
-// base 的完整历史也会被抓取，确保审查命令可以计算 merge-base。
+// PrepareWithBase 准备 PR head，把 PR base 固定到 refs/review/base，
+// 并把两者的共同祖先固定到 refs/review/merge-base，供所有审查工具比较。
 func PrepareWithBase(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
 	return prepare(dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA)
 }
@@ -69,16 +69,24 @@ func prepare(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSH
 	return Workspace{Dir: dir}, nil
 }
 
-const baseRef = "refs/review/base"
+const (
+	baseRef      = "refs/review/base"
+	mergeBaseRef = "refs/review/merge-base"
+)
 
 // prepareBase creates a stable base ref and makes the head/base histories
 // available. A depth-1 fetch of two commits is insufficient for merge-base:
 // both commits become shallow boundaries with no common ancestry.
 func prepareBase(dir, headSHA, baseBranch, baseSHA string) error {
+	// Reused workspaces must not retain a previous review's baseline if this
+	// preparation fails or no base was supplied.
+	if err := git(dir, "update-ref", "-d", mergeBaseRef); err != nil {
+		return err
+	}
 	if strings.TrimSpace(baseSHA) == "" {
 		return nil
 	}
-	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", baseSHA+":"+baseRef); err != nil {
+	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", "+"+baseSHA+":"+baseRef); err != nil {
 		return err
 	}
 	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", headSHA); err != nil {
@@ -92,6 +100,17 @@ func prepareBase(dir, headSHA, baseBranch, baseSHA string) error {
 		if err := git(dir, "update-ref", branchRef, baseSHA); err != nil {
 			return err
 		}
+	}
+	ancestors, err := gitOutput(dir, "merge-base", "--all", baseRef, "HEAD")
+	if err != nil {
+		return fmt.Errorf("无法确定 PR 共同祖先: %w", err)
+	}
+	bases := strings.Fields(ancestors)
+	if len(bases) != 1 {
+		return fmt.Errorf("无法确定唯一的 PR 共同祖先")
+	}
+	if err := git(dir, "update-ref", mergeBaseRef, bases[0]); err != nil {
+		return err
 	}
 	return nil
 }
