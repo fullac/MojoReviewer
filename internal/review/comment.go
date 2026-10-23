@@ -42,4 +42,4 @@ func PostCommentURL(repo string, number int, body, host string, secrets ...strin
 }
 
 // BotPrefix 与 github.BotPrefix 保持一致。放在 review 包是为了让发布评论不依赖 webhook 包。
-const BotPrefix = "【MojoReviewer】"
+const BotPrefix = "【MOJORviewer🥕】"

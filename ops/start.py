@@ -367,7 +367,7 @@ class Manager:
                     and payload.get("issue", {}).get("pull_request") and trigger
                     and re.search(r"(?<![A-Za-z0-9_.+@-])@" + re.escape(trigger) + r"(?![A-Za-z0-9_/@-])",
                                   comment, re.IGNORECASE | re.ASCII)
-                    and not comment.lstrip().startswith("【MojoReviewer】"))
+                    and not comment.lstrip().startswith(("【MOJORviewer🥕】", "【MojoReviewer】")))
 
     def request_action(self, action, body):
         with self.lock:

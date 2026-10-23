@@ -198,7 +198,7 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("审查记录未更新: %+v", rec)
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MojoReviewer】\n\n审查完成") {
+	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MOJORviewer🥕】\n\n审查完成") {
 		t.Fatalf("没有把审查结果发到配置的主机: %s %v", comment, err)
 	}
 	// 自动 PR 事件已有完整元数据，无需额外查询 GitHub。

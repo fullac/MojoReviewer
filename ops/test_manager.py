@@ -149,8 +149,9 @@ class ManagerTests(unittest.TestCase):
         # GitHub pull_request marker contains a URL, not an empty object.
         payload["issue"]["pull_request"] = {"url": "https://example.test"}
         self.assertTrue(self.m.eligible("issue_comment", payload, current))
-        payload["comment"]["body"] = "【MojoReviewer】 @reviewer"
-        self.assertFalse(self.m.eligible("issue_comment", payload, current))
+        for prefix in ("【MOJORviewer🥕】", "【MojoReviewer】"):
+            payload["comment"]["body"] = prefix + " @reviewer"
+            self.assertFalse(self.m.eligible("issue_comment", payload, current))
         payload["comment"]["body"] = "no trigger"
         self.assertFalse(self.m.eligible("issue_comment", payload, current))
         for comment in ("@reviewer-bot review", "@reviewer2", "@reviewer_team", "mail@reviewer.example", "@@reviewer", "@reviewer/team"):

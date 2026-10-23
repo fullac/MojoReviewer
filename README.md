@@ -94,7 +94,7 @@ go vet ./...
 
 ## 限制
 
-自己发出的评论以 `【MojoReviewer】` 开头，解析时会跳过，避免自触发。
+自己发出的评论以 `【MOJORviewer🥕】` 开头，解析时会跳过新前缀及旧前缀 `【MojoReviewer】`，避免自触发。
 
 自动审查接受 `opened`、`reopened`、`synchronize`、`ready_for_review`，跳过草稿。评论必须提及完整账号：配置为 `mojo` 时，`@mojo-bot`、`name@mojo` 不会触发。
 
