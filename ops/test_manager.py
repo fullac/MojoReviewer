@@ -128,6 +128,61 @@ class ManagerTests(unittest.TestCase):
         self.m.spawn.assert_not_called()
         self.m.rebuild.assert_called_once()
 
+    def test_stop_and_restart_clear_external_adoption(self):
+        self.m.binary = sys.executable
+        self.m.local_url = Mock(return_value="http://127.0.0.1:9968")
+        self.m.probe = Mock(return_value=True)
+        self.m.spawn = Mock()
+        with patch("start.socket.socket") as sock:
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            self.m.start_reviewer()
+        self.m.stop_child = Mock()
+        self.m.execute("stop", {})
+        self.assertFalse(self.m.external_reviewer)
+        self.assertFalse(self.m.snapshot()["reviewer_ready"])
+        self.assertNotIn("reviewer", self.m.snapshot()["pids"])
+        self.m.stop_child.assert_called()
+        self.m.desired = True
+        self.m.last_probe = time.monotonic()
+        self.m.rebuild = Mock()
+        self.m.reconcile = Mock()
+        self.m.tick()
+        self.m.spawn.assert_not_called()
+        self.assertTrue(self.m.external_reviewer)
+
+    def test_external_reviewer_keeps_active_attempts(self):
+        directory = self.root / "data"
+        atomic_json(directory / "activity.json", [
+            {"id": "active", "repo": "acme/web", "number": 7, "state": "running"},
+            {"id": "waiting", "repo": "acme/web", "number": 8, "state": "queued"},
+        ])
+        self.m.external_reviewer = True
+        self.m.local_ready = True
+        _, activities = self.m.record_data()
+        self.assertEqual([item["state"] for item in activities], ["running", "queued"])
+        self.m.local_ready = False
+        _, stopped = self.m.record_data()
+        self.assertEqual([item["state"] for item in stopped], ["interrupted", "interrupted"])
+
+    def test_dead_external_reviewer_disables_retry(self):
+        self.m.desired = True
+        self.m.external_reviewer = True
+        self.m.local_ready = True
+        self.m.phase = "running"
+        self.m.last_probe = 0
+        self.m.probe = Mock(return_value=False)
+        self.m.start_reviewer = Mock()
+        self.m.rebuild = Mock()
+        self.m.reconcile = Mock()
+        self.m.tick()
+        self.assertFalse(self.m.external_reviewer)
+        self.assertFalse(self.m.snapshot()["reviewer_ready"])
+        self.assertEqual(self.m.error, "本机 reviewer 未响应")
+        self.m.signed = Mock()
+        with self.assertRaisesRegex(ValueError, "本机 reviewer 未响应"):
+            self.m.execute("retry", {"repo": "acme/web", "number": 7})
+        self.m.signed.assert_not_called()
+
     def test_unhealthy_foreign_port_is_not_adopted(self):
         self.m.binary = sys.executable
         self.m.local_url = Mock(return_value="http://127.0.0.1:9968")
