@@ -459,6 +459,9 @@ class Manager:
                 self.external_reviewer = False
                 self.error = "本机 reviewer 未响应"
                 self.log(self.error)
+        elif self.desired and self.phase == "stopped" and not self.children.get("reviewer"):
+            # Stop cleared the previous adoption. Probe again before spawning.
+            self.last_probe = now
         if not self.external_reviewer and not self.children.get("reviewer"):
             self.start_reviewer()
         if self.command is not None or self.exit.is_set():

@@ -143,12 +143,22 @@ class ManagerTests(unittest.TestCase):
         self.assertNotIn("reviewer", self.m.snapshot()["pids"])
         self.m.stop_child.assert_called()
         self.m.desired = True
-        self.m.last_probe = time.monotonic()
+        self.m.token = Mock(side_effect=AssertionError("stopped adoption must probe before spawning"))
         self.m.rebuild = Mock()
         self.m.reconcile = Mock()
-        self.m.tick()
+        with patch("start.socket.socket") as sock:
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            self.m.tick()
         self.m.spawn.assert_not_called()
+        self.m.token.assert_not_called()
         self.assertTrue(self.m.external_reviewer)
+        self.m.execute("restart", {})
+        self.assertFalse(self.m.external_reviewer)
+        with patch("start.socket.socket") as sock:
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            self.m.tick()
+        self.assertTrue(self.m.external_reviewer)
+        self.m.spawn.assert_not_called()
 
     def test_external_reviewer_keeps_active_attempts(self):
         directory = self.root / "data"
