@@ -2,53 +2,66 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
-func TestPromptUsesReviewTools(t *testing.T) {
-	got := prompt(ReviewInput{
+func TestRolePromptsStayFocused(t *testing.T) {
+	input := ReviewInput{
 		Review:  github.Review{Repo: "acme/web", Number: 1, BaseBranch: "main", HeadBranch: "fix", HeadSHA: "head"},
 		WorkDir: "/tmp/review",
-		// Diff must not appear in the prompt even if a caller still fills it.
+		// Diff must not appear in any prompt even if a caller still fills it.
 		Diff: strings.Repeat("HUGE_DIFF_SHOULD_NOT_APPEAR_", 5000),
 		Memory: projectmem.ContextBundle{
 			Memories: []string{"仓库约定：比较基线用 refs/review/base"},
 			RAGHits:  []string{"[AGENTS.md] 只审查，不改仓库"},
 		},
-	})
-	for _, want := range []string{
-		"pr_diff_stat",
-		"pr_file_diff",
-		"read_repo_file",
-		"repo_grep",
-		"changed_symbols",
-		"review_note",
-		"tests_around",
-		"detached checkout",
-		"shallow",
-		"refs/review/base",
-		"git diff main...HEAD",
-		"项目记忆",
-		"只审查，不改仓库",
-		"不要期待提示词里有整份 diff",
-	} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("提示缺少 %q:\n%s", want, got)
-		}
 	}
-	for _, bad := range []string{"HUGE_DIFF_SHOULD_NOT_APPEAR_", "已准备的 diff"} {
-		if strings.Contains(got, bad) {
-			t.Fatalf("提示不应包含 %q（issue #21）", bad)
-		}
+	// 每一路都要有自己的工具提示，且不能再重复主线五步。
+	ownTools := map[string][]string{
+		"map":      {"pr_diff_stat", "pr_file_diff", "changed_symbols"},
+		"memory":   {"项目文档", "记忆片段"},
+		"behavior": {"pr_file_diff", "repo_grep"},
+		"tests":    {"tests_around"},
+		"static":   {"static_checks"},
 	}
-	if len(got) > 8000 {
-		t.Fatalf("审查 prompt 过长: %d 字符（不应再钉整份 diff）", len(got))
+	for _, role := range reviewRoles {
+		got := rolePrompt(input, role)
+		for _, want := range []string{
+			role.name,
+			"detached checkout",
+			"shallow",
+			"refs/review/base",
+			"git diff main...HEAD",
+			"review_note",
+			"不要期待提示词里有整份 diff",
+		} {
+			if !strings.Contains(got, want) {
+				t.Fatalf("分工 %s 的提示缺少 %q:\n%s", role.id, want, got)
+			}
+		}
+		for _, want := range ownTools[role.id] {
+			if !strings.Contains(got, want) {
+				t.Fatalf("分工 %s 的提示缺少本路工具 %q:\n%s", role.id, want, got)
+			}
+		}
+		for _, bad := range []string{"HUGE_DIFF_SHOULD_NOT_APPEAR_", "已准备的 diff"} {
+			if strings.Contains(got, bad) {
+				t.Fatalf("分工 %s 的提示不应包含 %q（issue #21）", role.id, bad)
+			}
+		}
+		// 预算按单路算：重复整份主线步骤会把一次审查推高到五倍。
+		if len(got) > 4000 {
+			t.Fatalf("分工 %s 的提示过长: %d 字符", role.id, len(got))
+		}
 	}
 }
 
@@ -219,6 +232,48 @@ func TestFixPrompt(t *testing.T) {
 	}
 }
 
+func TestRoleRuntimeIsReusedAndIsolated(t *testing.T) {
+	cfg := config.AgentConfig{
+		HomeDir:  t.TempDir(),
+		Provider: "openai",
+		Model:    "gpt-test",
+		APIKey:   "sk-test",
+	}
+	r := &Runner{cfg: cfg}
+	t.Cleanup(func() { _ = r.Close() })
+
+	first, err := r.roleRuntime(1)
+	if err != nil {
+		t.Fatalf("roleRuntime(1): %v", err)
+	}
+	again, err := r.roleRuntime(1)
+	if err != nil {
+		t.Fatalf("roleRuntime(1) again: %v", err)
+	}
+	if again != first {
+		t.Fatal("分工 runtime 被重新创建，会话和句柄会随审查次数增长")
+	}
+	second, err := r.roleRuntime(2)
+	if err != nil {
+		t.Fatalf("roleRuntime(2): %v", err)
+	}
+	if second == first {
+		t.Fatal("不同分工共用了同一个 runtime")
+	}
+	for index, runner := range map[int]*Runner{1: first, 2: second} {
+		want := filepath.Join(cfg.HomeDir, "roles", fmt.Sprint(index))
+		if runner.cfg.HomeDir != want {
+			t.Fatalf("分工 %d 的 HomeDir = %q, want %q", index, runner.cfg.HomeDir, want)
+		}
+	}
+	if len(r.children) != 2 {
+		t.Fatalf("分工 runtime 没有登记给 Close: %d", len(r.children))
+	}
+	if _, err := r.roleRuntime(0); err == nil {
+		t.Fatal("基础 runtime 不能当成分工 runtime 再建一份")
+	}
+}
+
 func TestRunnerFixEnabledFlag(t *testing.T) {
 	r := &Runner{fixEnabled: true}
 	if !r.FixEnabled() {
@@ -239,7 +294,10 @@ func TestPRDataCannotBreakOutOfPromptBoundary(t *testing.T) {
 		},
 		Memory: projectmem.ContextBundle{Memories: []string{attack}},
 	}
-	for name, build := range map[string]func(ReviewInput) string{"review": prompt, "fix": fixPrompt} {
+	for name, build := range map[string]func(ReviewInput) string{
+		"review": func(in ReviewInput) string { return rolePrompt(in, reviewRoles[0]) },
+		"fix":    fixPrompt,
+	} {
 		t.Run(name, func(t *testing.T) {
 			got := build(input)
 			const open, close = "<untrusted_pr_data>\n", "\n</untrusted_pr_data>"

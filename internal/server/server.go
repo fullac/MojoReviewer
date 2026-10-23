@@ -26,7 +26,7 @@ type reviewRunner interface {
 	FixEnabled() bool
 }
 
-// Server 接收 GitHub webhook，串行跑只读审查。
+// Server 接收 GitHub webhook，用有限数量的 worker 审查不同 PR。
 type Server struct {
 	cfg      config.Config
 	runner   reviewRunner
@@ -38,6 +38,9 @@ type Server struct {
 	pending  map[string]bool
 	prActive map[string]bool
 	prWait   map[string][]github.Review
+	// spawnWorker 为 worker 1..n-1 建运行时。默认是 base.CloneForWorker；
+	// 测试注入它，才能真正覆盖「同一 PR 钉回原 worker」的分配逻辑。
+	spawnWorker func(workerID int) (reviewRunner, error)
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -46,11 +49,17 @@ func New(cfg config.Config, runner *agent.Runner, st *store.Store) *Server {
 	for _, repo := range cfg.GitHub.Repos {
 		allowed[repo] = true
 	}
-	return &Server{
+	s := &Server{
 		cfg: cfg, runner: runner, store: st, allowed: allowed,
 		jobs: make(chan github.Review, 32), pending: map[string]bool{},
 		prActive: map[string]bool{}, prWait: map[string][]github.Review{},
 	}
+	if runner != nil {
+		s.spawnWorker = func(workerID int) (reviewRunner, error) {
+			return runner.CloneForWorker(workerID)
+		}
+	}
+	return s
 }
 
 // Start 启动 HTTP 服务和有限数量的审查 worker。不同 PR 可以并行，同一个 PR 串行。
@@ -195,16 +204,35 @@ func (s *Server) finishPR(key string) {
 	s.jobs <- next
 }
 
+// worker 从队列取任务。任务结束后必须释放该 PR 的占用，否则后续投递永远排不进去。
 func (s *Server) worker(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case item := <-s.jobs:
-			s.runOneWithRunner(ctx, item, s.runnerFor(item.SessionKey))
-			s.finishPR(item.SessionKey)
+			s.runQueued(ctx, item)
 		}
 	}
+}
+
+// runQueued 跑一个已入队的尝试，并保证无论正常返回还是 panic 都释放 PR 槽位。
+// 没有这个 defer 时，一次 panic 就会让 prActive 永远为 true：该 PR 之后的投递
+// 全部堆进 prWait，再也不会有 finishPR 把它们取走，而且这些残留会持续占用
+// 32 的队列配额，最后新 PR 会被 429 拒收。
+func (s *Server) runQueued(ctx context.Context, item github.Review) {
+	defer s.finishPR(item.SessionKey)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			slog.Error("审查任务内部错误", "pr", item.SessionKey, "panic", fmt.Sprint(recovered))
+			// 回执只会在成功发布之后才被标成 completed，所以这里覆盖不到成功结果。
+			_ = s.store.Activity(store.Activity{
+				ID: item.AttemptID, Repo: item.Repo, Number: item.Number,
+				HeadSHA: item.HeadSHA, State: "failed", Stage: "internal",
+			})
+		}
+	}()
+	s.runOneWithRunner(ctx, item, s.runnerFor(item.SessionKey))
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
@@ -215,22 +243,22 @@ func (s *Server) initRunners(workers int) error {
 	if workers < 1 {
 		workers = 1
 	}
-	if base, ok := s.runner.(*agent.Runner); ok && base != nil {
-		runners := make([]reviewRunner, workers)
-		runners[0] = base
-		for i := 1; i < workers; i++ {
-			clone, err := base.CloneForWorker(i)
-			if err != nil {
-				return fmt.Errorf("启动审查 worker %d: %w", i, err)
-			}
-			runners[i] = clone
-		}
-		s.runners = runners
+	if s.spawnWorker == nil {
+		// Tests and embedders may provide a fake runner. It is already responsible
+		// for its own synchronization, so keep it as a single logical runtime.
+		s.runners = []reviewRunner{s.runner}
 		return nil
 	}
-	// Tests and embedders may provide a fake runner. It is already responsible
-	// for its own synchronization, so keep it as a single logical runtime.
-	s.runners = []reviewRunner{s.runner}
+	runners := make([]reviewRunner, workers)
+	runners[0] = s.runner
+	for i := 1; i < workers; i++ {
+		clone, err := s.spawnWorker(i)
+		if err != nil {
+			return fmt.Errorf("启动审查 worker %d: %w", i, err)
+		}
+		runners[i] = clone
+	}
+	s.runners = runners
 	return nil
 }
 
@@ -250,15 +278,26 @@ func workerIDFor(sessionKey string, workers int) int {
 	return int(h.Sum32() % uint32(workers))
 }
 
-func (s *Server) runnerForRecord(sessionKey string, rec store.Record, found bool) (reviewRunner, int) {
+// runnerForRecord 选出应该跑这个 PR 的 runtime。resume 为 false 表示没有可复用
+// 的运行时：会话（包括分工会话）开在另一个 runtime 的 HomeDir 下，在本进程里
+// 重新打开是不可能的，只能重建会话。缩容 worker 后就是这种情况。
+func (s *Server) runnerForRecord(sessionKey string, rec store.Record, found bool) (reviewRunner, int, bool) {
 	if len(s.runners) == 0 {
-		return s.runner, 0
+		return s.runner, 0, true
 	}
-	workerID := rec.WorkerID
-	if !found || workerID < 0 || workerID >= len(s.runners) {
-		workerID = workerIDFor(sessionKey, len(s.runners))
+	workerID := workerIDFor(sessionKey, len(s.runners))
+	if !found {
+		return s.runners[workerID], workerID, false
 	}
-	return s.runners[workerID], workerID
+	pinned, set := rec.Worker()
+	if !set {
+		// 旧记录没有固定 worker，它们的会话在基础 runtime（worker 0）下。
+		pinned = 0
+	}
+	if pinned < 0 || pinned >= len(s.runners) {
+		return s.runners[workerID], workerID, false
+	}
+	return s.runners[pinned], pinned, true
 }
 
 func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selected reviewRunner) {
@@ -295,11 +334,21 @@ func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selec
 		return
 	}
 	existing, found := s.store.Get(item.SessionKey)
-	selected, workerID := s.runnerForRecord(item.SessionKey, existing, found)
+	selected, workerID, resume := s.runnerForRecord(item.SessionKey, existing, found)
+	if !resume {
+		// 会话和分工会话都开在那个 worker 的 HomeDir 下；换了 worker 就是打不开，
+		// 这里直接重建，不要拿旧会话去碰运气。
+		existing.SessionID = ""
+		existing.RoleSessions = nil
+	}
 	// Once an automatic attempt actually starts, reserve its SHA even if setup fails.
 	// Merely queued attempts remain recoverable after a process restart.
 	if item.Comment == "" {
-		reserved, err := s.store.ReserveAutoHead(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, WorkerID: workerID})
+		reserved, err := s.store.ReserveAutoHead(item.SessionKey, store.Record{
+			Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA,
+			SessionID: existing.SessionID, RoleSessions: existing.RoleSessions,
+			WorkerID: store.PinWorker(workerID),
+		})
 		if err != nil {
 			activity.Stage = "storage"
 			slog.Error("记录自动审查提交失败", "error", err)
@@ -346,7 +395,7 @@ func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selec
 			s.runFixAuthorDenied(item, &activity)
 			return
 		}
-		s.runFixWithRunner(ctx, item, &activity, selected, workerID)
+		s.runFixWithRunner(ctx, item, &activity, selected, workerID, existing)
 		return
 	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
@@ -364,7 +413,11 @@ func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selec
 	})
 	storageFailed := false
 	if result.SessionID != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID, RoleSessions: result.RoleSessions, WorkerID: workerID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{
+			Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA,
+			SessionID: result.SessionID, RoleSessions: result.RoleSessions,
+			WorkerID: store.PinWorker(workerID),
+		}); saveErr != nil {
 			storageFailed = true
 			activity.State, activity.Stage = "failed", "storage"
 			slog.Error("保存审查会话失败", "pr", item.SessionKey, "error", saveErr)
@@ -398,16 +451,16 @@ func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selec
 }
 
 func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activity) {
-	s.runFixWithRunner(ctx, item, a, s.runner, 0)
+	existing, _ := s.store.Get(item.SessionKey)
+	s.runFixWithRunner(ctx, item, a, s.runner, 0, existing)
 }
 
-func (s *Server) runFixWithRunner(ctx context.Context, item github.Review, a *store.Activity, selected reviewRunner, workerID int) {
+func (s *Server) runFixWithRunner(ctx context.Context, item github.Review, a *store.Activity, selected reviewRunner, workerID int, existing store.Record) {
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	existing, _ := s.store.Get(item.SessionKey)
 	a.Stage = "model"
 	// Diff is intentionally empty: the model pulls tools instead of a pinned bulk patch (issue #21).
 	result, err := selected.Fix(ctx, agent.ReviewInput{
@@ -417,7 +470,11 @@ func (s *Server) runFixWithRunner(ctx context.Context, item github.Review, a *st
 	})
 	storageFailed := false
 	if result.SessionID != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID, WorkerID: workerID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{
+			Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA,
+			SessionID: result.SessionID, RoleSessions: existing.RoleSessions,
+			WorkerID: store.PinWorker(workerID),
+		}); saveErr != nil {
 			storageFailed = true
 			a.State, a.Stage = "failed", "storage"
 			slog.Error("保存修复会话失败", "pr", item.SessionKey, "error", saveErr)
@@ -452,7 +509,11 @@ func (s *Server) runFixWithRunner(ctx context.Context, item github.Review, a *st
 		return
 	}
 	if pub.Changed && pub.CommitSHA != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA, SessionID: result.SessionID, WorkerID: workerID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{
+			Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA,
+			SessionID: result.SessionID, RoleSessions: existing.RoleSessions,
+			WorkerID: store.PinWorker(workerID),
+		}); saveErr != nil {
 			storageFailed = true
 			a.State, a.Stage = "failed", "storage"
 			slog.Error("保存修复提交记录失败", "pr", item.SessionKey, "error", saveErr)

@@ -59,6 +59,8 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 审查分工记录使用 `github.com/yurika0211/luckyagent-orchestrator/task` 的 `FileStore` 和 `EventBus`。它只保存角色、顺序和会话标识，不保存 prompt、diff 或凭据。不同 PR 的 worker，以及同一 PR 内的地图、记忆、行为、测试、静态分工，各自使用独立的 LuckyAgent runtime 和工具注册表。这些分工共享一次只读检出，宿主汇总笔记。`fix` 仍独占该 PR 的 worker，不和只读分工同时改目录。不要用 collab 的并行委托绕过宿主汇总和检出隔离。
 
+预算变化：一次审查现在跑 1 次宿主静态检查加 5 路模型调用，单次成本约为原来的 5 倍；同一 worker 内仍由 `runMu` 串行，所以同一个 worker 上的不同 PR 会排队。改并发或分工时要知道这个成本，不要靠调大 `max_context_tokens` 解决。
+
 ## 一次审查
 
 1. `github.ValidSignature`。secret 为空直接拒绝。body 最多读 2 MiB。
@@ -67,7 +69,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>-<hash>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
-7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。开工前把地图、记忆、行为、测试和静态检查分工写成 `luckyagent-orchestrator/task` 记录，目录按会话分开。五个分工各自使用独立 runtime 和会话，同时读取同一份只读检出；静态检查由宿主做语法、gofmt 和 `go vet`，结果作为数据注入。某一路失败时，其他路的笔记仍保留。
+7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。开工前把地图、记忆、行为、测试和静态检查分工写成 `luckyagent-orchestrator/task` 记录，目录按会话分开。五个分工各自使用独立 runtime 和会话，同时读取同一份只读检出；这些分工 runtime 按 worker 建一次就复用（HomeDir 是 `workers/<worker>/roles/<i>`），不是每次审查新建再丢弃。每路只拿自己的短 prompt，主线五步只给地图分工。静态检查由宿主做语法、gofmt 和 `go vet`，结果作为数据注入。某一路失败时，其他路的笔记仍保留。
 8. `review.PostComment` 发回 PR。宿主仍只根据 `review_note` 发一条评论。
 
 ## fix 路径
@@ -95,7 +97,9 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 `pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
 
-只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
+只读审查每轮共用一份读取回执：同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
+
+`go vet` 在检出内按包目录跑（`go vet ./internal/...` 的粒度），不把改动文件拍平进临时 module：拍平会让多包 PR 报 `found packages`、让只复制改动文件的包报 `undefined`，把假报错写进评论。运行时关掉模块下载（`GOPROXY=off`）并锁定 `-mod=readonly`，不修改被审仓库的 `go.mod`/`go.sum`，也不跟随检出外链接。因缺依赖、缺工具链或超时而跑不动时，结果标成「宿主静态检查未完成」，不能当作代码缺陷证据；只有真正的 vet 发现才进 findings。
 
 模型中断时保留已记录的笔记和读取范围，发布带「审查未完成」的失败说明；可识别的 foreground 任务只公开任务 ID 与原运行时恢复指令，不公开原始错误/prompt。宿主日志同样只记录归类原因和任务 ID。失败说明发布失败时，日志同时保留评论错误和这条归类原因。失败说明发布后仍记录 `failed/model`，只补充评论 URL，不能标记为审查完成。
 
@@ -122,7 +126,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 `data_dir` 默认 `~/.mojoreviewer`。LuckyAgent 家目录是其中的 `luckyagent/`，不读写 `~/.luckyagent`。审查记录在 `reviews.json`，项目记忆元数据在 `project_memory.json`，权限都是 `0600`。RAG 与长期记忆落在 `luckyagent/` 内，按仓库隔离 source 前缀 `repo:<owner/name>:`。
 
-`reviews.json` 的 `auto_heads` 独立于最近会话的 `head_sha`。写会话不能清除自动尝试历史；旧记录缺此字段时保守迁移已有 head。审查记录和活动回执通过临时文件、Sync、rename 原子写入。排队回执写入失败返回 500，不能接受任务后丢失记录。
+`reviews.json` 的 `auto_heads` 独立于最近会话的 `head_sha`。写会话不能清除自动尝试历史；旧记录缺此字段时保守迁移已有 head。`worker_id` 用指针区分「没写」和合法的 worker 0：没写时沿用已固定的值，写了就照写。会话和分工会话属于那个 worker 的 HomeDir，所以 worker 缩容后旧记录对不上时，必须丢掉 `session_id` 和 `role_sessions` 重建，不能拿旧会话去碰运气。审查记录和活动回执通过临时文件、Sync、rename 原子写入。排队回执写入失败返回 500，不能接受任务后丢失记录。
 
 `log_level` 支持 `debug`、`info`、`warn`、`error`，作用于 Mojo 宿主的 `slog` 日志；不修改 SDK 内部日志配置。
 
@@ -143,6 +147,8 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ## 改动时不要做的事
 
 - 不同 PR 的 worker 使用各自的检出和 LuckyAgent runtime。同一个 PR 的只读分工共享检出但使用独立 runtime；`fix` 不和只读分工同时改这份检出。一次审查的地图、记忆、行为、测试和静态分工写入 task 事件，宿主静态检查结果与带来源笔记一起汇总。
+- 不要让每次审查新建分工 runtime 再丢掉：那会按审查次数泄漏 runtime 和会话库句柄，而且同一个 HomeDir 会被两个存活 runtime 同时打开。分工 runtime 按 worker 建一次、按分工序号复用。
+- 同一 worker 的 `finishPR` 必须 `defer`，`worker` 循环要兜住 `recover`。少了任一个，一次 panic 就会让 `prActive` 永远为 true，后续投递堆进 `prWait` 再也不被取走，还持续占着 32 的队列配额。
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。

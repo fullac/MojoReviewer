@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"os"
@@ -104,18 +105,20 @@ func TestDifferentPullRequestsRunTogether(t *testing.T) {
 
 func TestSamePullRequestStaysSerial(t *testing.T) {
 	s, runner, _, _ := testServer(t, "", "")
-	var current atomic.Int32
-	var max atomic.Int32
-	done := make(chan struct{})
+	var current, peak atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	// 用“第一次审查卡在闸门上”制造重叠窗口，而不是靠 sleep 时长碰运气。
 	runner.onReview = func() {
 		now := current.Add(1)
 		for {
-			old := max.Load()
-			if now <= old || max.CompareAndSwap(old, now) {
+			old := peak.Load()
+			if now <= old || peak.CompareAndSwap(old, now) {
 				break
 			}
 		}
-		time.Sleep(30 * time.Millisecond)
+		started <- struct{}{}
+		<-release
 		current.Add(-1)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -132,36 +135,149 @@ func TestSamePullRequestStaysSerial(t *testing.T) {
 	second := first
 	second.HeadSHA = runGit(t, origin, "rev-parse", "HEAD")
 	s.enqueue(first)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		runner.mu.Lock()
-		count := len(runner.inputs)
-		runner.mu.Unlock()
-		if count >= 1 {
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first review did not start")
 	}
 	s.enqueue(second)
-	go func() {
-		for {
-			runner.mu.Lock()
-			count := len(runner.inputs)
-			runner.mu.Unlock()
-			if count >= 2 {
-				break
-			}
-			time.Sleep(5 * time.Millisecond)
-		}
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("serial reviews did not finish")
+	s.mu.Lock()
+	waiting := len(s.prWait[first.SessionKey])
+	s.mu.Unlock()
+	if waiting != 1 {
+		t.Fatalf("second delivery was not queued behind the active one: %d", waiting)
 	}
-	if max.Load() != 1 {
-		t.Fatalf("same PR overlapped: %d", max.Load())
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second review did not run after the first finished")
+	}
+	if peak.Load() != 1 {
+		t.Fatalf("same PR overlapped: %d", peak.Load())
+	}
+}
+
+// worker 运行时只在启动时按 worker 数建立，分配按 PR 确定，不随队列顺序变化。
+func TestWorkerRuntimePinning(t *testing.T) {
+	s, _, _, _ := testServer(t, "", "")
+	var spawned []int
+	s.spawnWorker = func(workerID int) (reviewRunner, error) {
+		spawned = append(spawned, workerID)
+		return &recordingRunner{}, nil
+	}
+	if err := s.initRunners(3); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(spawned) != "[1 2]" {
+		t.Fatalf("spawned workers = %v", spawned)
+	}
+	if len(s.runners) != 3 || s.runners[0] != s.runner {
+		t.Fatalf("runners = %d", len(s.runners))
+	}
+	for _, key := range []string{"acme/web#1", "acme/web#2", "acme/web#3"} {
+		want := s.runners[workerIDFor(key, 3)]
+		if got := s.runnerFor(key); got != want {
+			t.Fatalf("%s 分配到了别的 worker", key)
+		}
+		if again := s.runnerFor(key); again != want {
+			t.Fatalf("%s 的分配不稳定", key)
+		}
+	}
+}
+
+// 缩容 worker 后，旧记录固定到的 worker 已不存在：分工会话属于那个 runtime 的
+// HomeDir，不能带过来，必须重建会话并把新的 worker 写回记录。
+func TestWorkerShrinkRebuildsStaleSessions(t *testing.T) {
+	s, _, _, _ := testServer(t, "", "")
+	workers := []*recordingRunner{}
+	s.spawnWorker = func(workerID int) (reviewRunner, error) {
+		w := &recordingRunner{}
+		workers = append(workers, w)
+		return w, nil
+	}
+	if err := s.initRunners(2); err != nil {
+		t.Fatal(err)
+	}
+	item := localReviewItem(t)
+	if err := s.store.Put(item.SessionKey, store.Record{
+		Repo: item.Repo, Number: item.Number, HeadSHA: "older-head",
+		SessionID: "stale-session", RoleSessions: map[string]string{"map": "stale-map"},
+		WorkerID: store.PinWorker(3),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.runOneWithRunner(context.Background(), item, s.runners[0])
+
+	var served *recordingRunner
+	for _, w := range append([]*recordingRunner{s.runner.(*recordingRunner)}, workers...) {
+		w.mu.Lock()
+		n := len(w.inputs)
+		w.mu.Unlock()
+		if n > 0 {
+			served = w
+		}
+	}
+	if served == nil {
+		t.Fatal("review never ran")
+	}
+	served.mu.Lock()
+	got := served.inputs[0]
+	served.mu.Unlock()
+	if got.SessionID != "" || len(got.RoleSessions) != 0 {
+		t.Fatalf("stale sessions were reused: session=%q roles=%v", got.SessionID, got.RoleSessions)
+	}
+	rec, ok := s.store.Get(item.SessionKey)
+	if !ok {
+		t.Fatal("record missing")
+	}
+	worker, set := rec.Worker()
+	if !set || worker >= 2 {
+		t.Fatalf("record was not re-pinned to an existing worker: %d %v", worker, set)
+	}
+	if rec.SessionID == "stale-session" {
+		t.Fatal("stale session survived the re-pin")
+	}
+}
+
+// 一次 panic 不能把 PR 槽位和队列配额永久占用。
+func TestPanicReleasesPullRequestSlot(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	runner.onReview = func() { panic("boom") }
+	item := localReviewItem(t)
+	queued := item
+	queued.HeadSHA = "queued-head"
+	s.mu.Lock()
+	s.prActive[item.SessionKey] = true
+	s.prWait[item.SessionKey] = []github.Review{queued}
+	s.mu.Unlock()
+
+	s.runQueued(context.Background(), item)
+
+	s.mu.Lock()
+	active := s.prActive[item.SessionKey]
+	waiting := len(s.prWait[item.SessionKey])
+	s.mu.Unlock()
+	// 排队中的下一次尝试必须被放行：没释放槽位时 jobs 是空的，prWait 会一直留着。
+	if len(s.jobs) != 1 {
+		t.Fatalf("queued delivery was not released: %d", len(s.jobs))
+	}
+	if waiting != 0 {
+		t.Fatalf("waiting queue was not drained: %d", waiting)
+	}
+	if !active {
+		t.Fatal("released slot dropped the follow-up attempt")
+	}
+	raw, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []store.Activity
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].State != "failed" {
+		t.Fatalf("panic was not recorded as a failure: %s", raw)
 	}
 }
 

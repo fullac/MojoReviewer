@@ -34,16 +34,79 @@ func TestWorkerIDSurvivesSessionUpdates(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess", WorkerID: 2}); err != nil {
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess", WorkerID: PinWorker(2)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess-2"}); err != nil {
 		t.Fatal(err)
 	}
 	rec, ok := s.Get("acme/web#7")
-	if !ok || rec.WorkerID != 2 || rec.SessionID != "sess-2" {
+	if !ok || rec.SessionID != "sess-2" {
 		t.Fatalf("record=%+v ok=%v", rec, ok)
 	}
+	if worker, set := rec.Worker(); !set || worker != 2 {
+		t.Fatalf("worker pin lost: %d %v", worker, set)
+	}
+}
+
+// worker 0 是合法值：读取时不能被当成「没写」。
+func TestWorkerZeroIsARecordedPin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reviews.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess", WorkerID: PinWorker(0)}); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := s.Get("acme/web#7")
+	if worker, set := rec.Worker(); !set || worker != 0 {
+		t.Fatalf("worker 0 was read back as unset: %d %v", worker, set)
+	}
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess-2", WorkerID: PinWorker(3)}); err != nil {
+		t.Fatal(err)
+	}
+	if worker, _ := mustWorker(t, s, "acme/web#7"); worker != 3 {
+		t.Fatalf("re-pin to another worker was ignored: %d", worker)
+	}
+}
+
+// 会话字段以传入值为准：worker 换了以后必须能把旧会话清掉。
+func TestPutClearsSessionsExplicitly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reviews.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("acme/web#7", Record{
+		Repo: "acme/web", Number: 7, SessionID: "main", WorkerID: PinWorker(2),
+		RoleSessions: map[string]string{"map": "role"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, WorkerID: PinWorker(0)}); err != nil {
+		t.Fatal(err)
+	}
+	rec, _ := s.Get("acme/web#7")
+	if rec.SessionID != "" || len(rec.RoleSessions) != 0 {
+		t.Fatalf("stale sessions survived an explicit reset: %+v", rec)
+	}
+	if worker, _ := rec.Worker(); worker != 0 {
+		t.Fatalf("worker=%d", worker)
+	}
+}
+
+func mustWorker(t *testing.T, s *Store, key string) (int, bool) {
+	t.Helper()
+	rec, ok := s.Get(key)
+	if !ok {
+		t.Fatalf("record %s missing", key)
+	}
+	return rec.Worker()
 }
 
 func TestAutomaticHeadsSurviveSessionUpdatesAndRestart(t *testing.T) {

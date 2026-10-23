@@ -2,6 +2,7 @@ package review
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"go/ast"
 	"go/format"
@@ -9,11 +10,13 @@ import (
 	"go/token"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const (
@@ -24,6 +27,7 @@ const (
 	maxSymbolHits = 80
 	maxTestHits   = 40
 	maxReadLines  = 400
+	vetTimeout    = 90 * time.Second
 )
 
 // ToolScope 是一次审查的只读范围。所有路径都必须落在 Dir 内。
@@ -72,13 +76,27 @@ func (s ToolScope) StaticChecks() (string, error) {
 			lines = append(lines, clean+": 未通过 gofmt")
 		}
 	}
-	if vet := s.goVet(changedGoFiles(out)); vet != "" {
-		lines = append(lines, vet)
+	vet := s.goVet(changedGoFiles(out))
+	if vet.findings != "" {
+		lines = append(lines, vet.findings)
 	}
-	if len(lines) == 0 {
+	if len(lines) == 0 && vet.skipped == "" {
 		return "静态检查（宿主）：改动的 Go 文件通过语法解析、gofmt 和 go vet；没有执行仓库代码。", nil
 	}
-	return clip("静态检查（宿主）：\n- "+strings.Join(lines, "\n- ")+"\n未执行仓库代码。", 8000), nil
+	var b strings.Builder
+	b.WriteString("静态检查（宿主）：")
+	if len(lines) > 0 {
+		b.WriteString("\n- " + strings.Join(lines, "\n- "))
+	}
+	if vet.skipped != "" {
+		// 环境或依赖缺失不是代码缺陷证据，必须和真正的发现分开说明。
+		if len(lines) == 0 {
+			b.WriteString("改动的 Go 文件通过语法解析和 gofmt。")
+		}
+		b.WriteString("\n- go vet 未完成，不能当作代码已通过 vet：" + vet.skipped)
+	}
+	b.WriteString("\n这是宿主检查结果，没有执行仓库代码。")
+	return clip(b.String(), 8000), nil
 }
 
 func changedGoFiles(names string) []string {
@@ -92,62 +110,134 @@ func changedGoFiles(names string) []string {
 	return files
 }
 
-// goVet runs the compiler's vet checks on the packages that contain changed
-// Go files. It does not run tests and rejects paths outside the checkout.
-func (s ToolScope) goVet(files []string) string {
+// vetOutcome separates real vet findings from host-side gaps. A missing module
+// or toolchain is not evidence about the change under review, so it must never
+// reach the model as a code defect.
+type vetOutcome struct {
+	findings string
+	skipped  string
+}
+
+// goVet checks the packages that contain changed Go files. It runs the go
+// command against the checkout's own module, so packages type-check against the
+// real import graph: flattening changed files into a fresh module reported
+// "found packages …" for any multi-package PR and "undefined: …" for anything
+// a package keeps in files the PR did not touch. Module downloads are disabled
+// and the module graph is read-only, so a missing dependency becomes an
+// incomplete host check instead of a fake finding.
+func (s ToolScope) goVet(files []string) vetOutcome {
 	if len(files) == 0 {
-		return ""
+		return vetOutcome{}
 	}
-	var cleanFiles []string
+	dirs := map[string]bool{}
+	broken := map[string]bool{}
 	for _, rel := range files {
-		clean, err := s.clean(rel)
-		if err != nil {
-			return rel + ": 路径校验失败，未运行 go vet"
-		}
-		cleanFiles = append(cleanFiles, clean)
-	}
-	sort.Strings(cleanFiles)
-	tmp, err := os.MkdirTemp("", "mojo-vet-")
-	if err != nil {
-		return "go vet: " + truncate(err.Error(), 240)
-	}
-	defer os.RemoveAll(tmp)
-	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module mojovet\n\ngo 1.25.0\n"), 0o600); err != nil {
-		return "go vet: " + truncate(err.Error(), 240)
-	}
-	var copied []string
-	for _, clean := range cleanFiles {
-		raw, err := os.ReadFile(filepath.Join(s.Dir, filepath.FromSlash(clean)))
-		if err != nil {
+		dir := packageDir(rel)
+		if _, err := s.clean(rel); err != nil {
+			// 不跟随符号链接，也不为此跑 go vet：那一包的源文件不在检出内。
+			broken[dir] = true
 			continue
 		}
-		name := strings.ReplaceAll(clean, "/", "_")
-		if err := os.WriteFile(filepath.Join(tmp, name), raw, 0o600); err != nil {
-			return "go vet: " + truncate(err.Error(), 240)
-		}
-		copied = append(copied, name)
+		dirs[dir] = true
 	}
-	if len(copied) == 0 {
-		return ""
-	}
-	args := []string{"vet", "."}
-	cmd := exec.Command("go", args...)
-	cmd.Dir = tmp
-	cmd.Env = append(os.Environ(), "GOWORK=off")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	cmd.Stdout = &stderr
-	if err := cmd.Run(); err != nil {
-		detail := strings.TrimSpace(stderr.String())
-		if detail == "" {
-			detail = err.Error()
+	var notes []string
+	if len(broken) > 0 {
+		var names []string
+		for dir := range broken {
+			delete(dirs, dir)
+			names = append(names, packageArg(dir))
 		}
-		for _, clean := range cleanFiles {
-			detail = strings.ReplaceAll(detail, strings.ReplaceAll(clean, "/", "_"), clean)
-		}
-		return "go vet: " + truncate(detail, 1200)
+		sort.Strings(names)
+		notes = append(notes, "有改动文件的路径校验失败，未对这些包运行 go vet："+strings.Join(names, "、"))
 	}
-	return ""
+	var targets []string
+	for dir := range dirs {
+		targets = append(targets, packageArg(dir))
+	}
+	sort.Strings(targets)
+	if len(targets) == 0 {
+		return vetOutcome{skipped: strings.Join(notes, "；")}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), vetTimeout)
+	defer cancel()
+	// -tests=false 把范围守在「改动的非测试 Go 文件」：跑测试变体需要测试专用的
+	// 依赖，深浅不一的检出里通常拿不到，会把宿主检查变成噪声。
+	cmd := exec.CommandContext(ctx, "go", append([]string{"vet", "-tests=false"}, targets...)...)
+	cmd.Dir = s.Dir
+	cmd.Env = vetEnv()
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	err := cmd.Run()
+	detail := strings.TrimSpace(output.String())
+	if err == nil {
+		return vetOutcome{skipped: strings.Join(notes, "；")}
+	}
+	if ctx.Err() != nil {
+		notes = append(notes, "go vet 在 "+vetTimeout.String()+" 内没有结束")
+		return vetOutcome{skipped: strings.Join(notes, "；")}
+	}
+	if detail == "" {
+		detail = err.Error()
+	}
+	if hostGap(detail) {
+		notes = append(notes, truncate(detail, 600))
+		return vetOutcome{skipped: strings.Join(notes, "；")}
+	}
+	return vetOutcome{findings: "go vet: " + truncate(detail, 1200), skipped: strings.Join(notes, "；")}
+}
+
+// packageDir 返回文件所在的包目录，"." 表示检出根包。
+func packageDir(rel string) string {
+	return path.Dir(filepath.ToSlash(rel))
+}
+
+func packageArg(dir string) string {
+	if dir == "." || dir == "" {
+		return "."
+	}
+	return "./" + dir
+}
+
+// vetEnv vets another repository without touching it or the network.
+func vetEnv() []string {
+	drop := map[string]bool{"GOWORK": true, "GOPROXY": true, "GOFLAGS": true, "GO111MODULE": true}
+	env := make([]string, 0, len(os.Environ())+3)
+	for _, pair := range os.Environ() {
+		key, _, _ := strings.Cut(pair, "=")
+		if drop[key] {
+			continue
+		}
+		env = append(env, pair)
+	}
+	return append(env, "GOWORK=off", "GOPROXY=off", "GOFLAGS=-mod=readonly")
+}
+
+// vetHostGaps 是「宿主没法把包图建起来」的特征，不是被审代码的问题。
+var vetHostGaps = []string{
+	"no required module provides package",
+	"missing go.sum entry",
+	"module lookup disabled",
+	"cannot find module providing package",
+	"cannot find package",
+	"go: downloading",
+	"no such host",
+	"i/o timeout",
+	"dial tcp",
+	"connection refused",
+	"executable file not found",
+	"permission denied",
+	"toolchain not available",
+}
+
+func hostGap(detail string) bool {
+	lower := strings.ToLower(detail)
+	for _, marker := range vetHostGaps {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // Stat 返回文件地图的第一页。继续读取请使用 StatPage。

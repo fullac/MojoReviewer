@@ -29,6 +29,9 @@ type Runner struct {
 	runMu       sync.Mutex
 	childrenMu  sync.Mutex
 	children    []*Runner
+	// roles 是本 worker 的分工 runtime，按分工序号复用。每次审查新建再丢弃会
+	// 按审查次数线性泄漏 runtime 和会话库句柄。
+	roles map[int]*Runner
 }
 
 // New 启动嵌入式 LuckyAgent。HomeDir 必须是本服务自己的目录。
@@ -85,6 +88,45 @@ func (r *Runner) CloneForWorker(workerID int) (*Runner, error) {
 // FixEnabled 报告进程是否允许 fix 可写会话。
 func (r *Runner) FixEnabled() bool {
 	return r != nil && r.fixEnabled
+}
+
+// roleRuntime 返回一个分工专用的 runtime，首次使用时建立，之后由该 worker 的
+// 每次审查复用。每个分工有独立的 HomeDir（`<worker>/roles/<i>`），所以同一个
+// HomeDir 不会被两个存活的 runtime 同时打开，续审也能拿到自己的会话。
+// 调用方必须持有 r.runMu（Review 全程持有），Close 也一样。
+func (r *Runner) roleRuntime(index int) (*Runner, error) {
+	if r == nil {
+		return nil, fmt.Errorf("agent 未启动")
+	}
+	if index < 1 || index >= len(reviewRoles) {
+		return nil, fmt.Errorf("审查分工序号无效: %d", index)
+	}
+	r.childrenMu.Lock()
+	if existing := r.roles[index]; existing != nil {
+		r.childrenMu.Unlock()
+		return existing, nil
+	}
+	r.childrenMu.Unlock()
+	cfg := r.cfg
+	if strings.TrimSpace(cfg.HomeDir) == "" {
+		return nil, fmt.Errorf("LuckyAgent HomeDir 不能为空")
+	}
+	cfg.HomeDir = filepath.Join(cfg.HomeDir, "roles", fmt.Sprintf("%d", index))
+	clone, err := New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	if r.memoryStore != nil {
+		clone.AttachProjectMemory(r.memoryStore)
+	}
+	r.childrenMu.Lock()
+	if r.roles == nil {
+		r.roles = make(map[int]*Runner, len(reviewRoles)-1)
+	}
+	r.roles[index] = clone
+	r.children = append(r.children, clone)
+	r.childrenMu.Unlock()
+	return clone, nil
 }
 
 // Close 关闭运行时。
@@ -205,6 +247,8 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("记录审查分工: %w", err)
 	}
 	notes := &review.Notes{}
+	// 一次审查只维护一份读取回执，各分工共用：分工各读一份时，地图、行为、测试
+	// 会把同一份 patch 各拉一遍。
 	reads := &readProgress{}
 	roleSessions := maps.Clone(input.RoleSessions)
 	if roleSessions == nil {
@@ -216,9 +260,9 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	var firstErr error
 	for i, role := range reviewRoles {
 		if i > 0 {
-			clone, cloneErr := r.CloneForWorker(100 + i)
+			clone, cloneErr := r.roleRuntime(i)
 			if cloneErr != nil {
-				firstErr = fmt.Errorf("分工 %s 启动独立 runtime: %w", role.id, cloneErr)
+				firstErr = fmt.Errorf("分工 %s 启动 runtime: %w", role.id, cloneErr)
 				_ = plan.fail(role.id, cloneErr.Error())
 				break
 			}
@@ -236,21 +280,19 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		roleSessions[role.id] = created
 	}
 	type roleOutcome struct {
-		id    string
-		err   error
-		reads *readProgress
+		id  string
+		err error
 	}
 	outcomes := make(chan roleOutcome, len(reviewRoles))
-	runReviewRoles(reviewRoles, func(role struct{ id, name, work string }) error {
+	runReviewRoles(reviewRoles, func(role reviewRole) error {
 		runner := roleRunners[role.id]
 		roleSession := strings.TrimSpace(roleSessions[role.id])
 		if runner == nil || roleSession == "" {
 			return nil
 		}
-		roleReads := &readProgress{}
 		fail := func(err error) error {
 			_ = plan.fail(role.id, ModelFailureLog(err))
-			outcomes <- roleOutcome{id: role.id, err: err, reads: roleReads}
+			outcomes <- roleOutcome{id: role.id, err: err}
 			return nil
 		}
 		if err := plan.start(role.id); err != nil {
@@ -259,7 +301,7 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		if err := setSessionWorkingDir(runner.agent, roleSession, input.WorkDir); err != nil {
 			return fail(fmt.Errorf("设置工作目录: %w", err))
 		}
-		if err := registerReviewTools(runner.agent, review.ToolScope{Dir: input.WorkDir}, notes, roleReads, role.id); err != nil {
+		if err := registerReviewTools(runner.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads, role.id); err != nil {
 			return fail(fmt.Errorf("注册工具: %w", err))
 		}
 		if err := lockToolsToReviewOnly(runner.agent); err != nil {
@@ -269,12 +311,11 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 			return fail(roleErr)
 		}
 		_ = plan.complete(role.id, "分工完成")
-		outcomes <- roleOutcome{id: role.id, reads: roleReads}
+		outcomes <- roleOutcome{id: role.id}
 		return nil
 	})
 	close(outcomes)
 	for outcome := range outcomes {
-		reads.merge(outcome.reads)
 		if outcome.err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("分工 %s: %w", outcome.id, outcome.err)
 		}
@@ -441,39 +482,29 @@ func reviewNote(item github.Review) string {
 	return strings.TrimSpace(item.Comment)
 }
 
-func prompt(input ReviewInput) string {
+// rolePrompt 只给这一路分工它自己的步骤和只读规则。原来的写法把主线五步完整
+// 重复进五份 prompt：预算按五倍算，而且每一路都被告知去做地图那一步的工作。
+func rolePrompt(input ReviewInput, role reviewRole) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "请只读审查这个 GitHub PR，并用中文给出结论。\n\n")
+	fmt.Fprintf(&b, "请只读审查这个 GitHub PR，只完成「%s」这一路分工。\n\n", role.name)
 	fmt.Fprintf(&b, "仓库绝对路径：%s\n", input.WorkDir)
 	writePRData(&b, input)
 	// CodeFarmer-style: never pin a full diff into the durable goal/history.
 	// The model must fetch the file map and per-file patches via tools.
 	b.WriteString("\n不要期待提示词里有整份 diff。diff 不会预注入上下文（避免 durable goal 双倍占用预算）。\n")
-	b.WriteString("按固定分工使用工具，不要再把整份仓库读进上下文：\n")
-	b.WriteString("- 地图：分页读取 pr_diff_stat 和 changed_symbols。\n")
-	b.WriteString("- 记忆：只对照已注入的项目文档和记忆。\n")
-	b.WriteString("- 行为：按地图读取相关 patch 和调用方。\n")
-	b.WriteString("- 测试：使用 tests_around，默认不执行测试。\n")
-	b.WriteString("- 静态：只使用宿主提供的静态检查结果，不执行仓库代码。\n")
-	b.WriteString("各分工只通过 review_note 留下带来源、路径和行号的证据；source 使用地图、记忆、行为、测试或静态。宿主合并成一条评论。\n")
-	b.WriteString("1. 先调用 pr_diff_stat(offset=0, limit=50) 看文件地图；has_more=true 时用 next_offset 续取，直到 has_more=false。patch_truncated 只表示 patch 超限，不是文件列表被截断。\n")
-	b.WriteString("2. 对重点文件调用 pr_file_diff，每个 path 默认只读一次；需要上下文时用 read_repo_file 明确指定 start_line/end_line，同一行段不要重复读取。工具提示已读时改读未读范围或收束，不要循环重试。\n")
-	b.WriteString("3. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
-	b.WriteString("4. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
-	b.WriteString("5. 每发现一条问题就调用 review_note。severity 只能是「严重」或「建议」，source 必须填写证据来源。\n\n")
-	b.WriteString("主线证据足够后必须记录 review_note 并结束；没有发现问题则明确结束，不为凑结论反复读文件。无法核实的范围应明确说明，不能宣称完整审查。\n")
+	fmt.Fprintf(&b, "这一路的职责：%s\n", role.work)
+	if len(role.steps) > 0 {
+		b.WriteString("步骤：\n")
+		for i, step := range role.steps {
+			fmt.Fprintf(&b, "%d. %s\n", i+1, step)
+		}
+	}
+	b.WriteString("本轮各分工共用一份读取回执：同一文件的 patch、同一行段只会读一次。工具提示已读时改读未读范围或收束，不要循环重读。\n")
+	fmt.Fprintf(&b, "每发现一条问题就调用 review_note，severity 只能是「严重」或「建议」，source 填「%s」。证据足够后收束；没有发现问题就明确结束，不为凑结论反复读文件。无法核实的范围要写清楚。\n\n", role.name)
 	b.WriteString("规则：\n")
 	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。refs/review/base 保存 PR base 提交，比较基线用 refs/review/merge-base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
 	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
-	b.WriteString("3. 最终回复只写一句状态。评论正文由 review_note 汇总，不要在回复里再写一份。没有问题时不要调用 review_note。\n")
-	return b.String()
-}
-
-func rolePrompt(input ReviewInput, role struct{ id, name, work string }) string {
-	var b strings.Builder
-	b.WriteString(prompt(input))
-	fmt.Fprintf(&b, "\n当前独立分工：%s（%s）。%s\n", role.name, role.id, role.work)
-	b.WriteString("只完成当前分工；不要替其他分工下结论。发现问题时用 review_note，并把 source 填为当前分工。完成后只回复已完成。\n")
+	b.WriteString("3. 只完成当前分工，不要替其他分工下结论。最终回复只写一句状态；评论正文由 review_note 汇总。\n")
 	return b.String()
 }
 

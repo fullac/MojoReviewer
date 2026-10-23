@@ -11,11 +11,10 @@ func TestReviewRolesRunTogether(t *testing.T) {
 	active, peak := 0, 0
 	arrived := 0
 	release := make(chan struct{})
-	roles := make([]struct{ id, name, work string }, len(reviewRoles))
-	copy(roles, reviewRoles)
+	roles := append([]reviewRole(nil), reviewRoles...)
 	errCh := make(chan error, 1)
 	go func() {
-		runReviewRoles(roles, func(role struct{ id, name, work string }) error {
+		runReviewRoles(roles, func(role reviewRole) error {
 			mu.Lock()
 			active++
 			arrived++
