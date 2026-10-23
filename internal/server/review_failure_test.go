@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,18 @@ func TestFailureCommentCannotBePublished(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].State != "failed" || rows[0].CommentURL != "" || strings.Contains(string(raw), "private-test-value") {
 		t.Fatalf("发布失败不能伪造成功回执: %s", raw)
+	}
+}
+
+func TestModelFailureLogKeepsClassifiedReasonOnly(t *testing.T) {
+	cause := errors.New("前台任务未完成 tq-1 [blocked]\n原始 prompt private-test-value")
+	err := &agent.ReviewFailure{Reason: "重复读取未产生新证据，运行时已中断审查。", TaskID: "tq-1"}
+	got := agent.ModelFailureLog(fmt.Errorf("wrapped: %w", err))
+	if got != "重复读取未产生新证据，运行时已中断审查。 task=tq-1" || strings.Contains(got, "private-") || strings.Contains(got, cause.Error()) {
+		t.Fatalf("log=%q", got)
+	}
+	if got := agent.ModelFailureLog(errors.New("raw prompt private-test-value")); got != "模型执行失败，审查未完成。" || strings.Contains(got, "private-") {
+		t.Fatalf("generic log=%q", got)
 	}
 }
 
