@@ -79,6 +79,7 @@ class Manager:
         self.tokens = []
         self.last_reconcile = 0
         self.last_probe = 0
+        self.external_reviewer = False
 
     def redact(self, text):
         for token in self.tokens + [self.cfg.get("agent", {}).get("api_key", ""),
@@ -218,9 +219,18 @@ class Manager:
         self.local_url()
         with socket.socket() as sock:
             if sock.connect_ex(("127.0.0.1", port)) == 0:
+                if self.probe(self.local_url()):
+                    # systemd or another supervisor already owns this listener.
+                    # Use it for signed requests, but do not signal or restart it.
+                    self.external_reviewer = True
+                    self.phase = "running"
+                    self.error = ""
+                    self.log("使用已有本机 reviewer：" + self.local_url())
+                    return
                 raise ValueError("reviewer 端口已被占用；请先关闭原启动器，本管理器不会接管其他进程")
         settings = self.cfg.get("manager", {})
         env = dict(os.environ, GH_TOKEN=self.token(settings.get("reviewer_account", "raymojo42")))
+        self.external_reviewer = False
         self.spawn("reviewer", [self.binary], env)
         self.phase = "starting"
         deadline = time.monotonic() + 25
@@ -401,8 +411,11 @@ class Manager:
                 raise ValueError("入口尚未就绪")
             self.reconcile()
         elif action == "retry":
-            if self.phase != "running":
+            # A manual retry is a signed local webhook. It does not need the public tunnel.
+            if not self.external_reviewer and not self.children.get("reviewer"):
                 raise ValueError("请先启动服务")
+            if not self.probe(self.local_url()):
+                raise ValueError("本机 reviewer 未响应")
             trigger = self.cfg.get("github", {}).get("trigger_user", "").strip().removeprefix("@")
             if not trigger:
                 raise ValueError("请先配置 trigger_user")
@@ -426,7 +439,7 @@ class Manager:
             self.error = "reviewer 退出，将自动重启"
         if not self.desired or now < self.next_start:
             return
-        if not self.children.get("reviewer"):
+        if not self.external_reviewer and not self.children.get("reviewer"):
             self.start_reviewer()
         if self.command is not None or self.exit.is_set():
             return
@@ -469,12 +482,20 @@ class Manager:
             self.wake.clear()
         self.stop_all()
 
+    def process_ids(self):
+        pids = {name: process.pid for name, process in self.children.items() if process.poll() is None}
+        if self.external_reviewer:
+            pids["reviewer"] = "external"
+        return pids
+
     def snapshot(self):
         with self.lock:
             _, activity = self.record_data()
             return {"phase": self.phase, "desired": self.desired, "url": self.url,
+                    "external_reviewer": self.external_reviewer,
+                    "reviewer_ready": self.external_reviewer or bool(self.children.get("reviewer") and self.children["reviewer"].poll() is None),
                     "error": self.error, "pending": self.command is not None,
-                    "pids": {name: p.pid for name, p in self.children.items() if p.poll() is None},
+                    "pids": self.process_ids(),
                     "health_failures": self.failures, "activity": activity[::-1],
                     "logs": list(self.logs), "csrf": self.csrf}
 

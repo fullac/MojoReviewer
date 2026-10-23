@@ -99,6 +99,46 @@ class ManagerTests(unittest.TestCase):
         self.assertFalse(self.m.desired)
         self.m.start_reviewer.assert_not_called()
 
+    def test_healthy_external_reviewer_can_retry_without_taking_ownership(self):
+        self.m.desired = True
+        self.m.binary = sys.executable
+        self.m.local_url = Mock(return_value="http://127.0.0.1:9968")
+        self.m.probe = Mock(return_value=True)
+        self.m.spawn = Mock()
+        self.m.token = Mock()
+        with patch("start.socket.socket") as sock:
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            self.m.start_reviewer()
+        self.assertTrue(self.m.external_reviewer)
+        self.assertEqual(self.m.phase, "running")
+        self.m.spawn.assert_not_called()
+        self.m.token.assert_not_called()
+        snapshot = self.m.snapshot()
+        self.assertEqual(snapshot["pids"]["reviewer"], "external")
+        self.assertTrue(snapshot["reviewer_ready"])
+        self.m.signed = Mock(return_value=(202, '{"status":"queued"}'))
+        self.m.gh = Mock()
+        self.m.execute("retry", {"repo": "acme/web", "number": 7})
+        self.assertEqual(self.m.signed.call_args.args[0], "http://127.0.0.1:9968")
+        self.m.gh.assert_not_called()
+        self.m.rebuild = Mock()
+        self.m.reconcile = Mock()
+        self.m.last_probe = time.monotonic()
+        self.m.tick()
+        self.m.spawn.assert_not_called()
+        self.m.rebuild.assert_called_once()
+
+    def test_unhealthy_foreign_port_is_not_adopted(self):
+        self.m.binary = sys.executable
+        self.m.local_url = Mock(return_value="http://127.0.0.1:9968")
+        self.m.probe = Mock(return_value=False)
+        with patch("start.socket.socket") as sock:
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 0
+            with self.assertRaisesRegex(ValueError, "端口已被占用"):
+                self.m.start_reviewer()
+        self.assertFalse(self.m.external_reviewer)
+        self.assertFalse(self.m.snapshot()["reviewer_ready"])
+
     def test_hook_update_keeps_secret_and_only_adopted_id(self):
         self.m.url = "https://unit-test.trycloudflare.com"
         self.m.gh = Mock(return_value={"name": "web"})
@@ -176,6 +216,8 @@ class ManagerTests(unittest.TestCase):
 
     def test_manual_retry_is_local_and_does_not_post_github_comment(self):
         self.m.phase = "running"
+        self.m.external_reviewer = True
+        self.m.probe = Mock(return_value=True)
         self.m.signed = Mock(return_value=(202, "queued"))
         self.m.gh = Mock()
         self.m.execute("retry", {"repo": "acme/web", "number": 7})
@@ -184,6 +226,8 @@ class ManagerTests(unittest.TestCase):
 
     def test_manual_retry_normalizes_trigger_and_matches_replay_parser(self):
         self.m.phase = "running"
+        self.m.external_reviewer = True
+        self.m.probe = Mock(return_value=True)
         self.m.cfg["github"]["trigger_user"] = " @reviewer "
         self.m.signed = Mock(return_value=(202, "queued"))
         self.m.execute("retry", {"repo": "acme/web", "number": 7})
