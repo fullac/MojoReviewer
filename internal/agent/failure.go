@@ -19,6 +19,25 @@ type ReviewFailure struct {
 	cause    error
 }
 
+// ModelFailureLog 返回可写入宿主日志的归类原因。
+// 原始 SDK 错误可能含 prompt，不能进入日志字段。
+func ModelFailureLog(err error) string {
+	var failure *ReviewFailure
+	if errors.As(err, &failure) {
+		if failure.TaskID != "" {
+			return failure.Reason + " task=" + failure.TaskID
+		}
+		return failure.Reason
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "模型调用超时，审查未完成。"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "任务被取消，审查未完成。"
+	}
+	return "模型执行失败，审查未完成。"
+}
+
 func (f *ReviewFailure) Error() string { return f.Reason }
 func (f *ReviewFailure) Unwrap() error { return f.cause }
 

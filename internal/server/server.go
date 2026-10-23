@@ -259,10 +259,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	if err != nil {
-		slog.Warn("审查未完成，准备发布失败说明", "pr", item.SessionKey)
+		slog.Warn("审查未完成，准备发布失败说明", "pr", item.SessionKey, "reason", agent.ModelFailureLog(err))
 		commentURL, postErr := s.postComment(item, reviewFailureComment(result, err))
 		if postErr != nil {
-			slog.Error("发布审查失败说明失败", "pr", item.SessionKey, "error", postErr)
+			slog.Error("发布审查失败说明失败", "pr", item.SessionKey, "error", postErr, "review_error", agent.ModelFailureLog(err))
 			return
 		}
 		activity.CommentURL = commentURL
