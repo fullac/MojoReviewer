@@ -39,11 +39,8 @@ func TestSameHeadResumeSendsRuntimeCommand(t *testing.T) {
 		},
 	}
 	got := reviewTurnMessage(input, home)
-	if !strings.HasPrefix(got, "继续前台任务 tq-1\n") || strings.Contains(got, "tq-9") || strings.Contains(got, "tq-0") {
-		t.Fatalf("resume message: %q", got)
-	}
-	if !strings.Contains(got, "review_note") || strings.Contains(got, "请只读审查") {
-		t.Fatalf("resume must close out, not start a new review: %q", got)
+	if got != "继续前台任务 tq-1" {
+		t.Fatalf("resume message must be the exact runtime command, got %q", got)
 	}
 }
 

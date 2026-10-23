@@ -165,7 +165,7 @@ func reviewTurnMessage(input ReviewInput, homeDir string) string {
 	if !ok {
 		return prompt(input)
 	}
-	return resumeForegroundMessage(taskID) + "\n" + resumeCloseout
+	return resumeForegroundMessage(taskID)
 }
 
 func shouldResumeBlockedReview(input ReviewInput) bool {

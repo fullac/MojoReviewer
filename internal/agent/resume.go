@@ -62,9 +62,9 @@ func blockedForegroundTask(homeDir, sessionID string) (string, bool) {
 }
 
 // resumeForegroundMessage is the exact control text LuckyAgent accepts.
-// Anything else starts a new foreground task.
+// The runtime matches the whole message: "继续前台任务" or "继续前台任务 tq-N".
+// A second line is a new foreground task, so the close-out stays in the
+// recovered original prompt (already in the blocked task description).
 func resumeForegroundMessage(taskID string) string {
 	return "继续前台任务 " + taskID
 }
-
-const resumeCloseout = "宿主收束：基于已读证据调用 review_note，或明确结束。不要重复已读范围。"
