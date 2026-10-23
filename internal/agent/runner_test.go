@@ -273,7 +273,7 @@ func TestPRDataCannotBreakOutOfPromptBoundary(t *testing.T) {
 func TestReviewNotePreservesMarkdownAndTitle(t *testing.T) {
 	notes := &review.Notes{}
 	tools := reviewTools{notes: notes}
-	body := "**建议修复：**\n\n```go\nreturn err\n```\n\n*仅修改错误分支。*"
+	body := "- **问题：** 错误分支没有返回。\n\n- **建议修复：** 返回错误。\n\n  ```go\n  return err\n  ```\n\n  *仅修改错误分支。*"
 	_, err := tools.note(map[string]any{
 		"severity": "严重", "title": "错误未返回", "path": "a.go", "line": float64(7), "body": body,
 	})

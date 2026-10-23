@@ -79,7 +79,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 				"title":    {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
 				"path":     {Type: "string", Description: "相关文件的相对路径，可空", Required: false},
 				"line":     {Type: "number", Description: "相关行号，可空", Required: false},
-				"body":     {Type: "string", Description: "Markdown 正文：解释触发条件及影响，再给具体修复方向。适当使用加粗、斜体；代码片段、命令、配置必须使用带语言标记的围栏代码块，标识符用行内代码。不要重复标题、位置、分组或数量", Required: true},
+				"body":     {Type: "string", Description: "Markdown 无序列表正文，每项严格写成 - **标签：** 内容，项间空行，禁止独立标签段落。严重问题使用问题、影响、代码依据、建议修复、验证建议、补充说明；建议使用现状、收益、建议调整、验证建议、补充说明，无内容的可选项省略，后果统一称影响。代码、命令、配置、日志须用带语言标记的围栏代码块；围栏、内容及续行额外缩进两个空格归入所属列表项。适当加粗、斜体，短标识符用行内代码，不重复标题、位置、分组或数量", Required: true},
 			},
 			Handler:     tools.note,
 			AutoApprove: true,

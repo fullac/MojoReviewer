@@ -127,8 +127,8 @@ func write(t *testing.T, path, content string) {
 
 func TestNotesRenderMarkdown(t *testing.T) {
 	var notes Notes
-	body := "满足 **重试条件** 时会丢失任务。\n\n*仅影响重启后的恢复。*\n\n**建议修复：**\n\n```go\nif err != nil {\n\treturn err\n}\n```"
-	if err := notes.AddWithTitle("建议", "test.go", 0, "补充重复投递测试", "覆盖重复请求。"); err != nil {
+	body := "- **问题：** 满足重试条件时仍接受任务。\n\n- **影响：** 重启后可能丢失任务。\n\n- **建议修复：** 返回保存错误。\n\n  *建议修改示例：*\n\n  ```go\n  if err != nil {\n  \treturn err\n  }\n  ```"
+	if err := notes.AddWithTitle("建议", "test.go", 0, "补充重复投递测试", "- **建议调整：** 覆盖重复请求。"); err != nil {
 		t.Fatal(err)
 	}
 	if err := notes.AddWithTitle("严重", "server.go", 123, "保存失败仍接受任务", body); err != nil {
