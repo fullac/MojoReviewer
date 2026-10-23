@@ -269,3 +269,19 @@ func TestPRDataCannotBreakOutOfPromptBoundary(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewNotePreservesMarkdownAndTitle(t *testing.T) {
+	notes := &review.Notes{}
+	tools := reviewTools{notes: notes}
+	body := "**建议修复：**\n\n```go\nreturn err\n```\n\n*仅修改错误分支。*"
+	_, err := tools.note(map[string]any{
+		"severity": "严重", "title": "错误未返回", "path": "a.go", "line": float64(7), "body": body,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := reviewResult("session", "不要发布模型自由文本", notes, &readProgress{}, nil)
+	if err != nil || !result.Noted || !strings.Contains(result.Text, "**1. 错误未返回**") || !strings.Contains(result.Text, body) || strings.Contains(result.Text, "模型自由文本") {
+		t.Fatalf("note did not survive the publication path: %+v %v", result, err)
+	}
+}

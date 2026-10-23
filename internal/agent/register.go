@@ -76,9 +76,10 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 			Description: "记录一条审查意见。severity 只能是「严重」或「建议」。服务端会把笔记拼成最终 PR 评论，不要在最终回复里另写一份完整评论。",
 			Parameters: map[string]sdk.ToolParam{
 				"severity": {Type: "string", Description: "严重 或 建议", Required: true},
+				"title":    {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
 				"path":     {Type: "string", Description: "相关文件的相对路径，可空", Required: false},
 				"line":     {Type: "number", Description: "相关行号，可空", Required: false},
-				"body":     {Type: "string", Description: "这一条意见的正文", Required: true},
+				"body":     {Type: "string", Description: "Markdown 正文：解释触发条件及影响，再给具体修复方向。适当使用加粗、斜体；代码片段、命令、配置必须使用带语言标记的围栏代码块，标识符用行内代码。不要重复标题、位置、分组或数量", Required: true},
 			},
 			Handler:     tools.note,
 			AutoApprove: true,
@@ -147,7 +148,7 @@ func (t reviewTools) symbols(_ map[string]any) (string, error) {
 }
 
 func (t reviewTools) note(args map[string]any) (string, error) {
-	if err := t.notes.Add(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "body")); err != nil {
+	if err := t.notes.AddWithTitle(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "title"), argString(args, "body")); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil

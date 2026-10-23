@@ -30,7 +30,7 @@ func reviewResult(sessionID, _ string, notes *review.Notes, progress *readProgre
 	}
 	if err == nil {
 		if !result.Noted {
-			result.Text = notes.Render() + "\n\n本轮未记录审查意见；这不代表所有改动均已核实。"
+			result.Text = notes.Render()
 		}
 		return result, nil
 	}
