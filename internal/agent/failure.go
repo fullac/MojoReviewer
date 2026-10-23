@@ -16,6 +16,7 @@ type ReviewFailure struct {
 	Reason   string
 	TaskID   string
 	Coverage string
+	Failed   []string
 	cause    error
 }
 
@@ -36,6 +37,16 @@ func ModelFailureLog(err error) string {
 		return "任务被取消，审查未完成。"
 	}
 	return "模型执行失败，审查未完成。"
+}
+
+func failedRoutes(err error) []string {
+	var routes []string
+	for _, role := range reviewRoles {
+		if strings.Contains(err.Error(), "分工 "+role.id) {
+			routes = append(routes, role.name)
+		}
+	}
+	return routes
 }
 
 func (f *ReviewFailure) Error() string { return f.Reason }
@@ -61,7 +72,7 @@ func reviewResult(sessionID, _ string, notes *review.Notes, progress *readProgre
 	} else if errors.Is(err, context.Canceled) {
 		reason = "任务被取消，审查未完成。"
 	}
-	failure := &ReviewFailure{Reason: reason, Coverage: progress.summary(), cause: err}
+	failure := &ReviewFailure{Reason: reason, Coverage: progress.summary(), Failed: failedRoutes(err), cause: err}
 	// 只从运行时状态行提取 ID，不从可能包含 PR 文本的 title 中提取。
 	for _, line := range strings.Split(err.Error(), "\n") {
 		if strings.Contains(line, "[blocked]") || strings.Contains(line, "[failed]") {

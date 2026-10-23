@@ -211,57 +211,73 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		roleSessions = map[string]string{}
 	}
 	roleSessions[reviewRoles[0].id] = sessionID
+	// 工具注册表属于单个 runtime。各分工使用独立 runtime，才能同时读同一份只读检出。
+	roleRunners := map[string]*Runner{reviewRoles[0].id: r}
 	var firstErr error
-	for _, role := range reviewRoles {
-		roleSession := strings.TrimSpace(roleSessions[role.id])
-		if roleSession == "" {
-			roleSession, err = r.agent.NewSessionWithTitle(input.Review.SessionKey + ":" + role.id)
-			if err != nil {
-				firstErr = fmt.Errorf("分工 %s 创建会话: %w", role.id, err)
-				_ = plan.fail(role.id, firstErr.Error())
-				continue
+	for i, role := range reviewRoles {
+		if i > 0 {
+			clone, cloneErr := r.CloneForWorker(100 + i)
+			if cloneErr != nil {
+				firstErr = fmt.Errorf("分工 %s 启动独立 runtime: %w", role.id, cloneErr)
+				_ = plan.fail(role.id, cloneErr.Error())
+				break
 			}
-			roleSessions[role.id] = roleSession
+			roleRunners[role.id] = clone
+		}
+		if strings.TrimSpace(roleSessions[role.id]) != "" {
+			continue
+		}
+		created, createErr := roleRunners[role.id].agent.NewSessionWithTitle(input.Review.SessionKey + ":" + role.id)
+		if createErr != nil {
+			firstErr = fmt.Errorf("分工 %s 创建会话: %w", role.id, createErr)
+			_ = plan.fail(role.id, createErr.Error())
+			break
+		}
+		roleSessions[role.id] = created
+	}
+	type roleOutcome struct {
+		id    string
+		err   error
+		reads *readProgress
+	}
+	outcomes := make(chan roleOutcome, len(reviewRoles))
+	runReviewRoles(reviewRoles, func(role struct{ id, name, work string }) error {
+		runner := roleRunners[role.id]
+		roleSession := strings.TrimSpace(roleSessions[role.id])
+		if runner == nil || roleSession == "" {
+			return nil
 		}
 		roleReads := &readProgress{}
+		fail := func(err error) error {
+			_ = plan.fail(role.id, ModelFailureLog(err))
+			outcomes <- roleOutcome{id: role.id, err: err, reads: roleReads}
+			return nil
+		}
 		if err := plan.start(role.id); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("分工 %s 启动记录: %w", role.id, err)
-			}
-			_ = plan.fail(role.id, err.Error())
-			continue
+			return fail(fmt.Errorf("启动记录: %w", err))
 		}
-		if err := setSessionWorkingDir(r.agent, roleSession, input.WorkDir); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("分工 %s 设置工作目录: %w", role.id, err)
-			}
-			_ = plan.fail(role.id, err.Error())
-			continue
+		if err := setSessionWorkingDir(runner.agent, roleSession, input.WorkDir); err != nil {
+			return fail(fmt.Errorf("设置工作目录: %w", err))
 		}
-		if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, roleReads, role.id); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("分工 %s 注册工具: %w", role.id, err)
-			}
-			_ = plan.fail(role.id, err.Error())
-			continue
+		if err := registerReviewTools(runner.agent, review.ToolScope{Dir: input.WorkDir}, notes, roleReads, role.id); err != nil {
+			return fail(fmt.Errorf("注册工具: %w", err))
 		}
-		if err := lockToolsToReviewOnly(r.agent); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("分工 %s 限定工具: %w", role.id, err)
-			}
-			_ = plan.fail(role.id, err.Error())
-			continue
+		if err := lockToolsToReviewOnly(runner.agent); err != nil {
+			return fail(fmt.Errorf("限定工具: %w", err))
 		}
-		_, roleErr := r.agent.ChatSession(ctx, roleSession, rolePrompt(input, role))
-		reads.merge(roleReads)
-		if roleErr != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("分工 %s: %w", role.id, roleErr)
-			}
-			_ = plan.fail(role.id, ModelFailureLog(roleErr))
-			continue
+		if _, roleErr := runner.agent.ChatSession(ctx, roleSession, rolePrompt(input, role)); roleErr != nil {
+			return fail(roleErr)
 		}
 		_ = plan.complete(role.id, "分工完成")
+		outcomes <- roleOutcome{id: role.id, reads: roleReads}
+		return nil
+	})
+	close(outcomes)
+	for outcome := range outcomes {
+		reads.merge(outcome.reads)
+		if outcome.err != nil && firstErr == nil {
+			firstErr = fmt.Errorf("分工 %s: %w", outcome.id, outcome.err)
+		}
 	}
 	if firstErr != nil {
 		_ = plan.finish(taskstore.StatusFailed)

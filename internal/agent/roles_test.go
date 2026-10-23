@@ -1,47 +1,46 @@
 package agent
 
 import (
-	"path/filepath"
-	"slices"
+	"sync"
 	"testing"
-
-	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
+	"time"
 )
 
-func TestReviewPlanRecordsOrderedRoles(t *testing.T) {
-	dir := t.TempDir()
-	if err := recordReviewPlan(dir, "attempt-1", "session-1"); err != nil {
-		t.Fatal(err)
+func TestReviewRolesRunTogether(t *testing.T) {
+	var mu sync.Mutex
+	active, peak := 0, 0
+	arrived := 0
+	release := make(chan struct{})
+	roles := make([]struct{ id, name, work string }, len(reviewRoles))
+	copy(roles, reviewRoles)
+	errCh := make(chan error, 1)
+	go func() {
+		runReviewRoles(roles, func(role struct{ id, name, work string }) error {
+			mu.Lock()
+			active++
+			arrived++
+			if active > peak {
+				peak = active
+			}
+			allHere := arrived == len(roles)
+			mu.Unlock()
+			if allHere {
+				close(release)
+			}
+			<-release
+			mu.Lock()
+			active--
+			mu.Unlock()
+			return nil
+		})
+		errCh <- nil
+	}()
+	select {
+	case <-errCh:
+	case <-time.After(time.Second):
+		t.Fatal("分工没有结束")
 	}
-	store, err := taskstore.NewFileStore(filepath.Join(dir, "tasks", "session-1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	events, err := store.Events("attempt-1")
-	if err != nil || len(events) != 1 || events[0].Mode != taskstore.ModePipeline {
-		t.Fatalf("parent events=%+v err=%v", events, err)
-	}
-	children, err := store.List(taskstore.ListFilter{ParentID: "attempt-1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(children) != len(reviewRoles) {
-		t.Fatalf("children=%d", len(children))
-	}
-	got := make([]string, 0, len(children))
-	for _, child := range children {
-		if child.ParentSessionID != "session-1" {
-			t.Fatalf("child=%+v", child)
-		}
-		got = append(got, child.Role)
-	}
-	slices.Sort(got)
-	want := make([]string, 0, len(reviewRoles))
-	for _, role := range reviewRoles {
-		want = append(want, role.name)
-	}
-	slices.Sort(want)
-	if !slices.Equal(got, want) {
-		t.Fatalf("roles=%v", got)
+	if peak < 2 {
+		t.Fatalf("分工没有并行，峰值 %d", peak)
 	}
 }

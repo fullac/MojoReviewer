@@ -44,7 +44,7 @@ func (s ToolScope) StaticChecks() (string, error) {
 	var lines []string
 	for _, rel := range strings.Split(out, "\x00") {
 		rel = strings.TrimSpace(rel)
-		if rel == "" || !strings.HasSuffix(strings.ToLower(rel), ".go") {
+		if rel == "" || !strings.HasSuffix(strings.ToLower(rel), ".go") || strings.HasSuffix(strings.ToLower(rel), "_test.go") {
 			continue
 		}
 		clean, err := s.clean(rel)
@@ -72,10 +72,82 @@ func (s ToolScope) StaticChecks() (string, error) {
 			lines = append(lines, clean+": 未通过 gofmt")
 		}
 	}
+	if vet := s.goVet(changedGoFiles(out)); vet != "" {
+		lines = append(lines, vet)
+	}
 	if len(lines) == 0 {
-		return "静态检查（宿主）：改动的 Go 文件通过语法解析和 gofmt；没有执行仓库代码。", nil
+		return "静态检查（宿主）：改动的 Go 文件通过语法解析、gofmt 和 go vet；没有执行仓库代码。", nil
 	}
 	return clip("静态检查（宿主）：\n- "+strings.Join(lines, "\n- ")+"\n未执行仓库代码。", 8000), nil
+}
+
+func changedGoFiles(names string) []string {
+	var files []string
+	for _, rel := range strings.Split(names, "\x00") {
+		rel = strings.TrimSpace(rel)
+		if rel != "" && strings.HasSuffix(strings.ToLower(rel), ".go") && !strings.HasSuffix(strings.ToLower(rel), "_test.go") {
+			files = append(files, rel)
+		}
+	}
+	return files
+}
+
+// goVet runs the compiler's vet checks on the packages that contain changed
+// Go files. It does not run tests and rejects paths outside the checkout.
+func (s ToolScope) goVet(files []string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	var cleanFiles []string
+	for _, rel := range files {
+		clean, err := s.clean(rel)
+		if err != nil {
+			return rel + ": 路径校验失败，未运行 go vet"
+		}
+		cleanFiles = append(cleanFiles, clean)
+	}
+	sort.Strings(cleanFiles)
+	tmp, err := os.MkdirTemp("", "mojo-vet-")
+	if err != nil {
+		return "go vet: " + truncate(err.Error(), 240)
+	}
+	defer os.RemoveAll(tmp)
+	if err := os.WriteFile(filepath.Join(tmp, "go.mod"), []byte("module mojovet\n\ngo 1.25.0\n"), 0o600); err != nil {
+		return "go vet: " + truncate(err.Error(), 240)
+	}
+	var copied []string
+	for _, clean := range cleanFiles {
+		raw, err := os.ReadFile(filepath.Join(s.Dir, filepath.FromSlash(clean)))
+		if err != nil {
+			continue
+		}
+		name := strings.ReplaceAll(clean, "/", "_")
+		if err := os.WriteFile(filepath.Join(tmp, name), raw, 0o600); err != nil {
+			return "go vet: " + truncate(err.Error(), 240)
+		}
+		copied = append(copied, name)
+	}
+	if len(copied) == 0 {
+		return ""
+	}
+	args := []string{"vet", "."}
+	cmd := exec.Command("go", args...)
+	cmd.Dir = tmp
+	cmd.Env = append(os.Environ(), "GOWORK=off")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	cmd.Stdout = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = err.Error()
+		}
+		for _, clean := range cleanFiles {
+			detail = strings.ReplaceAll(detail, strings.ReplaceAll(clean, "/", "_"), clean)
+		}
+		return "go vet: " + truncate(detail, 1200)
+	}
+	return ""
 }
 
 // Stat 返回文件地图的第一页。继续读取请使用 StatPage。

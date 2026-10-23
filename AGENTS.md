@@ -57,7 +57,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 模块是 `github.com/mojoreviewer/mojoreviewer`。通过 `github.com/yurika0211/luckyagent-app/sdk` 进程内嵌 LuckyAgent，`go.mod` 固定公开版本，`go.sum` 校验依赖；构建不依赖相邻源码目录。不要重新引入旧的 `github.com/yurika0211/luckyagent/sdk` 或提交机器路径 replace。
 
-审查分工记录使用 `github.com/yurika0211/luckyagent-orchestrator/task` 的 `FileStore` 和 `EventBus`。它只保存角色、顺序和会话标识，不保存 prompt、diff 或凭据。不同 worker 使用独立的 LuckyAgent runtime 和工具注册表；同一个 PR 内的固定分工仍由该 PR 的 runtime 按顺序完成。不要用 collab 的并行委托绕过宿主汇总和检出隔离。
+审查分工记录使用 `github.com/yurika0211/luckyagent-orchestrator/task` 的 `FileStore` 和 `EventBus`。它只保存角色、顺序和会话标识，不保存 prompt、diff 或凭据。不同 PR 的 worker，以及同一 PR 内的地图、记忆、行为、测试、静态分工，各自使用独立的 LuckyAgent runtime 和工具注册表。这些分工共享一次只读检出，宿主汇总笔记。`fix` 仍独占该 PR 的 worker，不和只读分工同时改目录。不要用 collab 的并行委托绕过宿主汇总和检出隔离。
 
 ## 一次审查
 
@@ -67,7 +67,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>-<hash>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
-7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。开工前把地图、记忆、行为、测试和静态检查分工写成 `luckyagent-orchestrator/task` 记录，目录按会话分开；静态检查由宿主执行并作为数据注入。每个 worker 的工具注册表独立，同一个 PR 内的分工按顺序完成，不并发改绑检出。
+7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。开工前把地图、记忆、行为、测试和静态检查分工写成 `luckyagent-orchestrator/task` 记录，目录按会话分开。五个分工各自使用独立 runtime 和会话，同时读取同一份只读检出；静态检查由宿主做语法、gofmt 和 `go vet`，结果作为数据注入。某一路失败时，其他路的笔记仍保留。
 8. `review.PostComment` 发回 PR。宿主仍只根据 `review_note` 发一条评论。
 
 ## fix 路径
@@ -142,7 +142,7 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 
 ## 改动时不要做的事
 
-- 不同 PR 的 worker 使用各自的检出和 LuckyAgent runtime。同一个 PR 不并发绑定同一份检出。一次审查的地图、记忆、行为、测试和静态分工写入 task 事件，宿主静态检查结果与带来源笔记一起汇总。
+- 不同 PR 的 worker 使用各自的检出和 LuckyAgent runtime。同一个 PR 的只读分工共享检出但使用独立 runtime；`fix` 不和只读分工同时改这份检出。一次审查的地图、记忆、行为、测试和静态分工写入 task 事件，宿主静态检查结果与带来源笔记一起汇总。
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。

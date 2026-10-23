@@ -4,11 +4,27 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	taskstore "github.com/yurika0211/luckyagent-orchestrator/task"
 )
 
+// runReviewRoles starts every role before waiting, so one slow route cannot
+// hold the shared read-only checkout ahead of the others.
+func runReviewRoles(roles []struct{ id, name, work string }, run func(struct{ id, name, work string }) error) {
+	var wg sync.WaitGroup
+	for _, role := range roles {
+		wg.Add(1)
+		go func(role struct{ id, name, work string }) {
+			defer wg.Done()
+			_ = run(role)
+		}(role)
+	}
+	wg.Wait()
+}
+
 type reviewPlan struct {
+	mu       sync.Mutex
 	store    *taskstore.FileStore
 	bus      *taskstore.EventBus
 	parent   taskstore.Record
@@ -87,6 +103,8 @@ func recordReviewPlan(dir, attempt, session string) error {
 }
 
 func (p *reviewPlan) start(role string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	child, ok := p.children[role]
 	if !ok {
 		return fmt.Errorf("未知审查分工: %s", role)
@@ -99,6 +117,8 @@ func (p *reviewPlan) start(role string) error {
 }
 
 func (p *reviewPlan) complete(role, message string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	child, ok := p.children[role]
 	if !ok {
 		return fmt.Errorf("未知审查分工: %s", role)
@@ -111,6 +131,8 @@ func (p *reviewPlan) complete(role, message string) error {
 }
 
 func (p *reviewPlan) fail(role, message string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	child, ok := p.children[role]
 	if !ok {
 		return fmt.Errorf("未知审查分工: %s", role)

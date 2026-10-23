@@ -48,6 +48,7 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 	run(t, dir, "git", "init", "-b", "main")
 	run(t, dir, "git", "config", "user.email", "test@example.com")
 	run(t, dir, "git", "config", "user.name", "test")
+	write(t, filepath.Join(dir, "go.mod"), "module example.com/calc\n\ngo 1.25.0\n")
 	write(t, filepath.Join(dir, "calc.go"), "package calc\n\nfunc Add(a, b int) int { return a + b }\n")
 	write(t, filepath.Join(dir, "calc_test.go"), "package calc\n\nfunc TestAdd(t *testing.T) {}\n")
 	run(t, dir, "git", "add", ".")
@@ -72,7 +73,7 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(static, "静态检查（宿主）") || !strings.Contains(static, "通过语法解析和 gofmt") {
+	if !strings.Contains(static, "静态检查（宿主）") || !strings.Contains(static, "通过语法解析、gofmt 和 go vet") {
 		t.Fatalf("静态检查结果异常:\n%s", static)
 	}
 	diff, err := scope.FileDiff("calc.go")
@@ -84,6 +85,20 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 	}
 	if _, err := scope.FileDiff("../outside"); err == nil {
 		t.Fatal("file diff 应拒绝越界路径")
+	}
+	outside := t.TempDir()
+	write(t, filepath.Join(outside, "escape.go"), "package escape\n")
+	if err := os.Symlink(filepath.Join(outside, "escape.go"), filepath.Join(dir, "escape.go")); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "git", "add", "escape.go")
+	run(t, dir, "git", "commit", "-m", "link")
+	linked, err := scope.StaticChecks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(linked, "escape.go: 通过") || !strings.Contains(linked, "路径校验失败") {
+		t.Fatalf("静态检查跟随了检出外链接:\n%s", linked)
 	}
 	symbols, err := scope.ChangedSymbols()
 	if err != nil {
