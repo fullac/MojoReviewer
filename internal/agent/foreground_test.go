@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -18,21 +17,40 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 )
 
-// 使用真实 SDK foreground 和本地假模型，验证 SDK 熔断能携带笔记/进度返回宿主。
-func TestForegroundRepeatedReadsReturnRecoverableFailure(t *testing.T) {
+// 使用真实 SDK 和本地假模型。只读重复达到上限后，运行时应要求收束，
+// 而不是把前台任务标成 blocked。模型继续重复时，宿主仍保留已有笔记。
+func TestForegroundRepeatedReadsConvergeWithNotes(t *testing.T) {
 	var requests atomic.Int32
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			Stream bool `json:"stream"`
+			Stream   bool `json:"stream"`
+			Messages []struct {
+				Content string `json:"content"`
+			} `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "bad request", 400)
 			return
 		}
+		if len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "Review whether") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"verify","choices":[{"index":0,"finish_reason":"stop","message":{"role":"assistant","content":"{\"status\":\"complete\",\"reason\":\"All requested work has recorded evidence\",\"evidence\":[\"The recorded tool result and final answer satisfy the task\"]}"}}]}`))
+			return
+		}
 		call := requests.Add(1)
 		name, arguments := "read_repo_file", `{"path":"a.go","start_line":1,"end_line":1}`
 		if call == 1 {
-			name, arguments = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"fixture finding before interruption"}`
+			name, arguments = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"fixture finding before convergence"}`
+		}
+		if call >= 8 {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id": "fixture", "choices": []any{map[string]any{
+					"index": 0, "finish_reason": "stop",
+					"message": map[string]any{"role": "assistant", "content": "模型自由文本不应进入评论"},
+				}},
+			})
+			return
 		}
 		tool := map[string]any{
 			"id": fmt.Sprintf("call-%d", call), "type": "function",
@@ -70,12 +88,11 @@ func TestForegroundRepeatedReadsReturnRecoverableFailure(t *testing.T) {
 	result, err := runner.Review(context.Background(), ReviewInput{
 		WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"},
 	})
-	var failure *ReviewFailure
-	if !errors.As(err, &failure) || !strings.Contains(failure.Reason, "重复读取") || failure.TaskID == "" {
-		t.Fatalf("未识别实际 SDK 熔断: %v (requests=%d)", err, requests.Load())
+	if err != nil {
+		t.Fatalf("审查未收束: %v requests=%d", err, requests.Load())
 	}
-	if !result.Noted || !strings.Contains(result.Text, "fixture finding before interruption") || !strings.Contains(failure.Coverage, `"a.go"`) {
-		t.Fatalf("SDK 中断丢失笔记/回执: %+v %+v", result, failure)
+	if !result.Noted || !strings.Contains(result.Text, "fixture finding before convergence") || strings.Contains(result.Text, "模型自由文本") {
+		t.Fatalf("收束后未保留宿主笔记: %+v", result)
 	}
 	if requests.Load() > 15 {
 		t.Fatalf("重复读取未及时收束: %d 次模型请求", requests.Load())
