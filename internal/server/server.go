@@ -27,13 +27,15 @@ type reviewRunner interface {
 
 // Server 接收 GitHub webhook，串行跑只读审查。
 type Server struct {
-	cfg     config.Config
-	runner  reviewRunner
-	store   *store.Store
-	allowed map[string]bool
-	jobs    chan github.Review
-	mu      sync.Mutex
-	pending map[string]bool
+	cfg      config.Config
+	runner   reviewRunner
+	store    *store.Store
+	allowed  map[string]bool
+	jobs     chan github.Review
+	mu       sync.Mutex
+	pending  map[string]bool
+	prActive map[string]bool
+	prWait   map[string][]github.Review
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -42,10 +44,14 @@ func New(cfg config.Config, runner *agent.Runner, st *store.Store) *Server {
 	for _, repo := range cfg.GitHub.Repos {
 		allowed[repo] = true
 	}
-	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32), pending: map[string]bool{}}
+	return &Server{
+		cfg: cfg, runner: runner, store: st, allowed: allowed,
+		jobs: make(chan github.Review, 32), pending: map[string]bool{},
+		prActive: map[string]bool{}, prWait: map[string][]github.Review{},
+	}
 }
 
-// Start 启动 HTTP 服务和单个审查 worker。
+// Start 启动 HTTP 服务和有限数量的审查 worker。不同 PR 可以并行，同一个 PR 串行。
 func (s *Server) Start(ctx context.Context) error {
 	if err := s.store.InterruptActivities(); err != nil {
 		return err
@@ -58,7 +64,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("POST /webhook/github", s.handleWebhook)
 	httpServer := &http.Server{Addr: s.cfg.Server.Addr(), Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 
-	go s.worker(ctx)
+	workers := s.cfg.Agent.ReviewConcurrency
+	if workers < 1 {
+		workers = 2
+	}
+	for i := 0; i < workers; i++ {
+		go s.worker(ctx)
+	}
 	go func() {
 		<-ctx.Done()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -94,50 +106,88 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	if item.Comment == "" && s.pending[item.SessionKey+":"+item.HeadSHA] {
-		slog.Debug("跳过排队中的重复审查", "pr", item.SessionKey, "head", item.HeadSHA)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
-		return
-	}
-	if item.Comment == "" && s.store.HasAutoHead(item.SessionKey, item.HeadSHA) {
-		slog.Debug("跳过已尝试的自动审查", "pr", item.SessionKey, "head", item.HeadSHA)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"duplicate"}`))
-		return
-	}
-	item.AttemptID = fmt.Sprint(time.Now().UnixNano())
-	if delivery := r.Header.Get("X-GitHub-Delivery"); delivery != "" && len(delivery) <= 128 {
-		item.AttemptID = "github:" + delivery
-		seen, err := s.store.HasActivity(item.AttemptID)
-		if err != nil {
-			http.Error(w, "读取投递记录失败", 500)
-			return
-		}
-		if seen {
-			w.WriteHeader(200)
-			_, _ = w.Write([]byte(`{"status":"duplicate"}`))
-			return
-		}
-	}
-	if len(s.jobs) == cap(s.jobs) {
-		http.Error(w, "队列已满", http.StatusTooManyRequests)
-		return
-	}
-
-	if err := s.store.Activity(store.Activity{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}); err != nil {
+	status, payload, err := s.accept(item, r.Header.Get("X-GitHub-Delivery"))
+	s.mu.Unlock()
+	if err != nil {
 		slog.Error("记录排队状态失败", "error", err)
 		http.Error(w, "记录排队状态失败", http.StatusInternalServerError)
 		return
 	}
+	w.WriteHeader(status)
+	_, _ = w.Write([]byte(payload))
+}
+
+// accept decides one webhook under s.mu. Duplicate checks, the queue cap, and
+// enqueue stay together so concurrent deliveries cannot all pass the same SHA.
+func (s *Server) accept(item *github.Review, delivery string) (int, string, error) {
+	if item.Comment == "" && s.pending[item.SessionKey+":"+item.HeadSHA] {
+		slog.Debug("跳过排队中的重复审查", "pr", item.SessionKey, "head", item.HeadSHA)
+		return http.StatusOK, `{"status":"duplicate"}`, nil
+	}
+	if item.Comment == "" && s.store.HasAutoHead(item.SessionKey, item.HeadSHA) {
+		slog.Debug("跳过已尝试的自动审查", "pr", item.SessionKey, "head", item.HeadSHA)
+		return http.StatusOK, `{"status":"duplicate"}`, nil
+	}
+	item.AttemptID = fmt.Sprint(time.Now().UnixNano())
+	if delivery != "" && len(delivery) <= 128 {
+		item.AttemptID = "github:" + delivery
+		seen, err := s.store.HasActivity(item.AttemptID)
+		if err != nil {
+			return 500, "", fmt.Errorf("读取投递记录失败")
+		}
+		if seen {
+			return http.StatusOK, `{"status":"duplicate"}`, nil
+		}
+	}
+	queued := len(s.jobs)
+	for _, waiting := range s.prWait {
+		queued += len(waiting)
+	}
+	if queued >= cap(s.jobs) {
+		return http.StatusTooManyRequests, "队列已满\n", nil
+	}
+	if err := s.store.Activity(store.Activity{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}); err != nil {
+		return http.StatusInternalServerError, "", err
+	}
 	if item.Comment == "" {
 		s.pending[item.SessionKey+":"+item.HeadSHA] = true
 	}
-	s.jobs <- *item
+	s.enqueueLocked(*item)
 	slog.Debug("任务已排队", "pr", item.SessionKey, "attempt", item.AttemptID)
-	w.WriteHeader(http.StatusAccepted)
-	_, _ = w.Write([]byte(`{"status":"queued"}`))
+	return http.StatusAccepted, `{"status":"queued"}`, nil
+}
+
+// enqueue keeps one PR on a single worker. A second delivery for that PR waits
+// behind the active attempt instead of sharing its checkout and session.
+func (s *Server) enqueue(item github.Review) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enqueueLocked(item)
+}
+
+// enqueueLocked requires s.mu. The jobs channel has room because the webhook
+// counts both the channel and prWait against the same capacity before accepting.
+func (s *Server) enqueueLocked(item github.Review) {
+	if s.prActive[item.SessionKey] {
+		s.prWait[item.SessionKey] = append(s.prWait[item.SessionKey], item)
+		return
+	}
+	s.prActive[item.SessionKey] = true
+	s.jobs <- item
+}
+
+func (s *Server) finishPR(key string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiting := s.prWait[key]
+	if len(waiting) == 0 {
+		delete(s.prActive, key)
+		delete(s.prWait, key)
+		return
+	}
+	next := waiting[0]
+	s.prWait[key] = waiting[1:]
+	s.jobs <- next
 }
 
 func (s *Server) worker(ctx context.Context) {
@@ -147,6 +197,7 @@ func (s *Server) worker(ctx context.Context) {
 			return
 		case item := <-s.jobs:
 			s.runOne(ctx, item)
+			s.finishPR(item.SessionKey)
 		}
 	}
 }

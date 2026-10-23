@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -142,6 +143,10 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	}
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
+	}
+	attempt := safeAttempt(input.Review.AttemptID)
+	if err := recordReviewPlan(filepath.Dir(input.WorkDir), attempt, sessionID); err != nil {
+		return ReviewResult{SessionID: sessionID}, fmt.Errorf("记录审查分工: %w", err)
 	}
 	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
 	return reviewResult(sessionID, text, notes, reads, err)
@@ -305,7 +310,12 @@ func prompt(input ReviewInput) string {
 	// CodeFarmer-style: never pin a full diff into the durable goal/history.
 	// The model must fetch the file map and per-file patches via tools.
 	b.WriteString("\n不要期待提示词里有整份 diff。diff 不会预注入上下文（避免 durable goal 双倍占用预算）。\n")
-	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")
+	b.WriteString("按固定分工使用工具，不要再把整份仓库读进上下文：\n")
+	b.WriteString("- 地图：分页读取 pr_diff_stat 和 changed_symbols。\n")
+	b.WriteString("- 记忆：只对照已注入的项目文档和记忆。\n")
+	b.WriteString("- 行为：按地图读取相关 patch 和调用方。\n")
+	b.WriteString("- 测试：使用 tests_around，默认不执行测试。\n")
+	b.WriteString("各分工只通过 review_note 留下带路径和行号的证据。宿主合并成一条评论。\n")
 	b.WriteString("1. 先调用 pr_diff_stat(offset=0, limit=50) 看文件地图；has_more=true 时用 next_offset 续取，直到 has_more=false。patch_truncated 只表示 patch 超限，不是文件列表被截断。\n")
 	b.WriteString("2. 对重点文件调用 pr_file_diff，每个 path 默认只读一次；需要上下文时用 read_repo_file 明确指定 start_line/end_line，同一行段不要重复读取。工具提示已读时改读未读范围或收束，不要循环重试。\n")
 	b.WriteString("3. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")

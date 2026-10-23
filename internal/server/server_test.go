@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
@@ -22,6 +23,7 @@ import (
 )
 
 type recordingRunner struct {
+	mu           sync.Mutex
 	inputs       []agent.ReviewInput
 	fixInputs    []agent.ReviewInput
 	remembers    []string
@@ -33,7 +35,9 @@ type recordingRunner struct {
 }
 
 func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
+	r.mu.Lock()
 	r.inputs = append(r.inputs, input)
+	r.mu.Unlock()
 	if r.onReview != nil {
 		r.onReview()
 	}
@@ -44,7 +48,9 @@ func (r *recordingRunner) Review(_ context.Context, input agent.ReviewInput) (ag
 }
 
 func (r *recordingRunner) Fix(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
+	r.mu.Lock()
 	r.fixInputs = append(r.fixInputs, input)
+	r.mu.Unlock()
 	if r.onFix != nil {
 		r.onFix()
 	}
@@ -52,7 +58,9 @@ func (r *recordingRunner) Fix(_ context.Context, input agent.ReviewInput) (agent
 }
 
 func (r *recordingRunner) RememberProject(content string) error {
+	r.mu.Lock()
 	r.remembers = append(r.remembers, content)
+	r.mu.Unlock()
 	return nil
 }
 
@@ -125,6 +133,7 @@ func queueComment(t *testing.T, s *Server) github.Review {
 	}
 	select {
 	case item := <-s.jobs:
+		s.finishPR(item.SessionKey)
 		return item
 	default:
 		t.Fatal("队列为空")
@@ -311,6 +320,7 @@ func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
 		t.Fatalf("未入队: %d %s", w.Code, w.Body.String())
 	}
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	if item.Intent != github.IntentRemember {
 		t.Fatalf("intent=%s", item.Intent)
 	}
@@ -338,6 +348,7 @@ func TestFixIntentRepliesUnsupported(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleWebhook(w, req)
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	if item.Intent != github.IntentFix {
 		t.Fatalf("intent=%s", item.Intent)
 	}
@@ -387,6 +398,7 @@ func TestFixIntentRunsWhenEnabled(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleWebhook(w, req)
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	if item.Intent != github.IntentFix {
 		t.Fatalf("intent=%s", item.Intent)
 	}
@@ -422,6 +434,7 @@ func TestFixAuthorDenied(t *testing.T) {
 	w := httptest.NewRecorder()
 	s.handleWebhook(w, req)
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	// ResolveComment 会用 mock gh 填 Author；这里直接改 item 跑 runOne 路径
 	item.Author = "intruder"
 	item.Intent = github.IntentFix

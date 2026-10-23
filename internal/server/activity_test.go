@@ -14,7 +14,9 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
@@ -67,6 +69,111 @@ func TestConcurrentAutomaticDeliveriesQueueOnce(t *testing.T) {
 	}
 }
 
+func TestDifferentPullRequestsRunTogether(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	s.cfg.Agent.ReviewConcurrency = 2
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	runner.onReview = func() {
+		runner.mu.Lock()
+		key := runner.inputs[len(runner.inputs)-1].Review.SessionKey
+		runner.mu.Unlock()
+		started <- key
+		<-release
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.worker(ctx)
+	go s.worker(ctx)
+	s.enqueue(localHead(t, 7, "acme/web#7"))
+	s.enqueue(localHead(t, 8, "acme/web#8"))
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case key := <-started:
+			seen[key] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("reviews did not overlap", seen)
+		}
+	}
+	if !seen["acme/web#7"] || !seen["acme/web#8"] {
+		t.Fatalf("started=%v", seen)
+	}
+	close(release)
+}
+
+func TestSamePullRequestStaysSerial(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	var current atomic.Int32
+	var max atomic.Int32
+	done := make(chan struct{})
+	runner.onReview = func() {
+		now := current.Add(1)
+		for {
+			old := max.Load()
+			if now <= old || max.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		time.Sleep(30 * time.Millisecond)
+		current.Add(-1)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.worker(ctx)
+	go s.worker(ctx)
+	first := localHead(t, 7, "acme/web#7")
+	origin := strings.TrimPrefix(first.CloneURL, "file://")
+	if err := os.WriteFile(filepath.Join(origin, "next.txt"), []byte("next\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "add", "next.txt")
+	runGit(t, origin, "commit", "-m", "second")
+	second := first
+	second.HeadSHA = runGit(t, origin, "rev-parse", "HEAD")
+	s.enqueue(first)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		runner.mu.Lock()
+		count := len(runner.inputs)
+		runner.mu.Unlock()
+		if count >= 1 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	s.enqueue(second)
+	go func() {
+		for {
+			runner.mu.Lock()
+			count := len(runner.inputs)
+			runner.mu.Unlock()
+			if count >= 2 {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("serial reviews did not finish")
+	}
+	if max.Load() != 1 {
+		t.Fatalf("same PR overlapped: %d", max.Load())
+	}
+}
+
+func localHead(t *testing.T, number int, key string) github.Review {
+	t.Helper()
+	item := localReviewItem(t)
+	item.Number = number
+	item.SessionKey = key
+	item.Comment = ""
+	return item
+}
+
 func TestQueueReceiptFailureDoesNotAcceptTask(t *testing.T) {
 	s, _, _, _ := testServer(t, "", "")
 	if err := os.Mkdir(filepath.Join(s.cfg.DataDir, "activity.json"), 0700); err != nil {
@@ -89,6 +196,7 @@ func TestFailedAutomaticHeadHistorySurvivesHeadChanges(t *testing.T) {
 			t.Fatal("new automatic head was not queued", w.Code)
 		}
 		item := <-s.jobs
+		s.finishPR(item.SessionKey)
 		item.CloneURL = "file://" + origin
 		s.runOne(context.Background(), item)
 	}
@@ -122,7 +230,8 @@ func TestRestartAllowsUnstartedDeliveryToBeRequeued(t *testing.T) {
 	if w := autoDeliveryRequest(s, "head", "queued-delivery"); w.Code != 202 {
 		t.Fatal(w.Code)
 	}
-	<-s.jobs
+	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	s.pending = map[string]bool{}
 	if err := s.store.InterruptActivities(); err != nil {
 		t.Fatal(err)
@@ -266,6 +375,7 @@ func TestPendingDuplicateAndFullQueue(t *testing.T) {
 	}
 
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	for i := 0; i < cap(s.jobs); i++ {
 		s.jobs <- item
 	}
@@ -302,6 +412,7 @@ func TestStartedFailedHeadReservedAcrossRestart(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	origin := t.TempDir()
 	runGit(t, origin, "init")
 	item.CloneURL = "file://" + origin

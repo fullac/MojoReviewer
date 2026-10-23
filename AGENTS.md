@@ -9,7 +9,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 模型工具必须落在这次检出里。`refs/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/review/merge-base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
-- 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
+- 不同 PR 可以并行审查。默认 2 个 worker，`agent.review_concurrency` 取 1 到 4。同一个 PR 串行，续用该 PR 的会话和检出。队列总数仍是 32，满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次，已开始的自动尝试持久化到 `auto_heads`，失败也保留。带完整 @触发用户 的评论或 GUI 显式重审可以再审，并续用已有会话。仅排队未执行的自动任务可在重启后补齐；中断的 GitHub 评论在投递保留期内请求补送，本地 GUI 重审需再次点击。
 - 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；改工作区后由宿主 commit/push 到 head 分支）。
 - 自己发出的评论以 `【MojoReviewer】` 开头。解析 webhook 时要跳过，避免自己触发自己。
@@ -37,7 +37,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 .github/workflows/ci.yml     PR 到 main 时跑 vet/test/build
 LICENSE                      MIT
 cmd/mojoreviewer/main.go     读配置、把 token 放进 GH_TOKEN、启动 runner 和 HTTP
-internal/server/server.go    POST /webhook/github、GET /health、单个 worker
+internal/server/server.go    POST /webhook/github、GET /health、有限并发 worker
 internal/github/event.go     pull_request 与 issue_comment 解析，HMAC 校验
 internal/github/intent.go    评论意图：review / fix / remember
 internal/review/workspace.go 克隆、fetch、固定 PR base 与 merge-base
@@ -57,6 +57,8 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 模块是 `github.com/mojoreviewer/mojoreviewer`。通过 `github.com/yurika0211/luckyagent-app/sdk` 进程内嵌 LuckyAgent，`go.mod` 固定公开版本，`go.sum` 校验依赖；构建不依赖相邻源码目录。不要重新引入旧的 `github.com/yurika0211/luckyagent/sdk` 或提交机器路径 replace。
 
+审查分工记录使用 `github.com/yurika0211/luckyagent-orchestrator/task` 的 `FileStore` 和 `EventBus`。它只保存角色、顺序和会话标识，不保存 prompt、diff 或凭据。不要用 collab 的并行委托同时跑多条模型会话：审查工具闭包绑在进程级注册表上，并发会话会把工具指到别人的检出。
+
 ## 一次审查
 
 1. `github.ValidSignature`。secret 为空直接拒绝。body 最多读 2 MiB。
@@ -65,8 +67,8 @@ config.example.json          可提交的配置样例（无真实密钥）
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
-7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
-8. `review.PostComment` 发回 PR。
+7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。开工前把地图、记忆、行为、测试四段分工写成 `luckyagent-orchestrator/task` 记录，目录按会话分开。当前工具注册是进程级的，所以这四段仍由同一个只读会话按顺序完成，不并发改绑检出。
+8. `review.PostComment` 发回 PR。宿主仍只根据 `review_note` 发一条评论。
 
 ## fix 路径
 
@@ -140,7 +142,7 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 
 ## 改动时不要做的事
 
-- 不要把审查改成多 worker，除非同时处理会话和检出目录的并发。
+- 不同 PR 的 worker 使用各自的检出。同一个 PR 不并发绑定同一份检出。一次审查的地图、记忆、行为和测试分工写入 task 事件，当前仍由同一个只读会话完成。
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。

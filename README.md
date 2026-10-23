@@ -120,6 +120,7 @@ go vet ./...
 | `agent.max_context_tokens` | 组装上下文的 token 上限，默认 40000，至少 1000 |
 | `agent.request_timeout` | 单次模型请求超时，默认 `5m`，也用于本地检查执行预算 |
 | `agent.task_timeout` | 一次 review/fix 的总超时，默认 `20m` |
+| `agent.review_concurrency` | 同时审查的不同 PR 数，默认 2，范围 1 到 4。同一个 PR 仍串行 |
 | `log_level` | Mojo 宿主日志级别：`debug` / `info` / `warn` / `error`，默认 `info`；不修改 SDK 内部日志配置 |
 
 完整边界与流程见 [`AGENTS.md`](AGENTS.md)。
