@@ -246,9 +246,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	activity.Stage = "model"
 	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
 	result, err := s.runner.Review(ctx, agent.ReviewInput{
-		Review:    item,
-		WorkDir:   ws.Dir,
-		SessionID: existing.SessionID,
+		Review:        item,
+		WorkDir:       ws.Dir,
+		SessionID:     existing.SessionID,
+		StoredHeadSHA: existing.HeadSHA,
 	})
 	storageFailed := false
 	if result.SessionID != "" {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
@@ -17,6 +18,7 @@ import (
 // Runner 在进程内跑一个 LuckyAgent，全局只用一个模型。
 type Runner struct {
 	agent      *sdk.Agent
+	homeDir    string
 	timeout    time.Duration
 	memory     *projectmem.Indexer
 	fixEnabled bool
@@ -44,7 +46,7 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
+	return &Runner{agent: agent, homeDir: cfg.HomeDir, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
 }
 
 // FixEnabled 报告进程是否允许 fix 可写会话。
@@ -95,6 +97,9 @@ type ReviewInput struct {
 	Diff      string
 	SessionID string
 	Memory    projectmem.ContextBundle
+	// StoredHeadSHA 是 reviews.json 里上次审查记下的 head。
+	// 只有它和当前 head 相同，才允许恢复被挡住的前台任务。
+	StoredHeadSHA string
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
@@ -143,8 +148,65 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
+	message := reviewTurnMessage(input, r.homeDir)
+	text, err := r.agent.ChatSession(ctx, sessionID, message)
 	return reviewResult(sessionID, text, notes, reads, err)
+}
+
+// reviewTurnMessage chooses the runtime control text or a fresh review prompt.
+// A blocked task is resumed only for the same head, and only when the user did
+// not explicitly ask for a new review. Task IDs are read from the local
+// foreground record; comment text is never trusted for tq-N.
+func reviewTurnMessage(input ReviewInput, homeDir string) string {
+	if !shouldResumeBlockedReview(input) {
+		return prompt(input)
+	}
+	taskID, ok := blockedForegroundTask(homeDir, input.SessionID)
+	if !ok {
+		return prompt(input)
+	}
+	return resumeForegroundMessage(taskID) + "\n" + resumeCloseout
+}
+
+func shouldResumeBlockedReview(input ReviewInput) bool {
+	if strings.TrimSpace(input.SessionID) == "" {
+		return false
+	}
+	head := strings.TrimSpace(input.Review.HeadSHA)
+	stored := strings.TrimSpace(input.StoredHeadSHA)
+	if head == "" || stored == "" || head != stored {
+		return false
+	}
+	return !explicitRereview(input.Review)
+}
+
+func explicitRereview(item github.Review) bool {
+	cmd, _ := splitLeadingCommand(reviewNote(item))
+	switch normalizeReviewCommand(cmd) {
+	case "review", "recheck", "look", "审查", "重审", "再审", "看看", "看下":
+		return true
+	default:
+		return false
+	}
+}
+
+func splitLeadingCommand(text string) (cmd, rest string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", ""
+	}
+	fields := strings.FieldsFunc(text, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ':' || r == '：' || r == ',' || r == '，'
+	})
+	if len(fields) == 0 {
+		return "", ""
+	}
+	return fields[0], ""
+}
+
+func normalizeReviewCommand(cmd string) string {
+	cmd = strings.ToLower(strings.TrimSpace(cmd))
+	return strings.Trim(cmd, ":：,，;/\\")
 }
 
 // Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
