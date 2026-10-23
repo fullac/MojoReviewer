@@ -124,6 +124,7 @@ async function config(){
     f.elements.api_key.placeholder=c.agent.api_key_set?'已配置 · 留空保留':'填写密钥';
     f.elements.webhook_secret.placeholder=c.github.webhook_secret_set?'已配置 · 留空保留':'填写密钥';
     f.elements.max_context_tokens.value=c.agent.max_context_tokens||40000;
+    f.elements.review_concurrency.value=c.agent.review_concurrency||2;
     f.elements.port.value=c.server?.port||9968;
     f.elements.auto_start.checked=!!c.manager.auto_start;
     f.elements.hooks.value=Object.entries(c.manager.hooks||{
@@ -164,7 +165,7 @@ $('#config-form').addEventListener('submit',async event=>{
       },server:{
         host:'127.0.0.1',port:Number(f.elements.port.value)
       }
-    };for(const name of ['provider','model','api_base','api_key','task_timeout','request_timeout'])cfg.agent[name]=f.elements[name].value.trim();cfg.agent.max_context_tokens=Number(f.elements.max_context_tokens.value);for(const name of ['host','trigger_user','webhook_secret'])cfg.github[name]=f.elements[name].value.trim();for(const name of ['reviewer_account','admin_account'])cfg.manager[name]=f.elements[name].value.trim();await request('/api/config',cfg);f.elements.api_key.value='';f.elements.webhook_secret.value='';loadedConfig=false;await config();message('配置已保存。启动服务后生效。');
+    };for(const name of ['provider','model','api_base','api_key','task_timeout','request_timeout'])cfg.agent[name]=f.elements[name].value.trim();cfg.agent.max_context_tokens=Number(f.elements.max_context_tokens.value);cfg.agent.review_concurrency=Number(f.elements.review_concurrency.value);for(const name of ['host','trigger_user','webhook_secret'])cfg.github[name]=f.elements[name].value.trim();for(const name of ['reviewer_account','admin_account'])cfg.manager[name]=f.elements[name].value.trim();await request('/api/config',cfg);f.elements.api_key.value='';f.elements.webhook_secret.value='';loadedConfig=false;await config();message('配置已保存。启动服务后生效。');
   }catch(error){
     message(error.message,true);
   }

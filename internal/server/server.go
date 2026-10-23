@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log/slog"
 	"net/http"
@@ -32,6 +33,7 @@ type Server struct {
 	store    *store.Store
 	allowed  map[string]bool
 	jobs     chan github.Review
+	runners  []reviewRunner
 	mu       sync.Mutex
 	pending  map[string]bool
 	prActive map[string]bool
@@ -67,6 +69,9 @@ func (s *Server) Start(ctx context.Context) error {
 	workers := s.cfg.Agent.ReviewConcurrency
 	if workers < 1 {
 		workers = 2
+	}
+	if err := s.initRunners(workers); err != nil {
+		return err
 	}
 	for i := 0; i < workers; i++ {
 		go s.worker(ctx)
@@ -196,13 +201,67 @@ func (s *Server) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case item := <-s.jobs:
-			s.runOne(ctx, item)
+			s.runOneWithRunner(ctx, item, s.runnerFor(item.SessionKey))
 			s.finishPR(item.SessionKey)
 		}
 	}
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
+	s.runOneWithRunner(ctx, item, s.runner)
+}
+
+func (s *Server) initRunners(workers int) error {
+	if workers < 1 {
+		workers = 1
+	}
+	if base, ok := s.runner.(*agent.Runner); ok && base != nil {
+		runners := make([]reviewRunner, workers)
+		runners[0] = base
+		for i := 1; i < workers; i++ {
+			clone, err := base.CloneForWorker(i)
+			if err != nil {
+				return fmt.Errorf("启动审查 worker %d: %w", i, err)
+			}
+			runners[i] = clone
+		}
+		s.runners = runners
+		return nil
+	}
+	// Tests and embedders may provide a fake runner. It is already responsible
+	// for its own synchronization, so keep it as a single logical runtime.
+	s.runners = []reviewRunner{s.runner}
+	return nil
+}
+
+func (s *Server) runnerFor(sessionKey string) reviewRunner {
+	if len(s.runners) == 0 {
+		return s.runner
+	}
+	return s.runners[workerIDFor(sessionKey, len(s.runners))]
+}
+
+func workerIDFor(sessionKey string, workers int) int {
+	if workers <= 1 {
+		return 0
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(sessionKey))
+	return int(h.Sum32() % uint32(workers))
+}
+
+func (s *Server) runnerForRecord(sessionKey string, rec store.Record, found bool) (reviewRunner, int) {
+	if len(s.runners) == 0 {
+		return s.runner, 0
+	}
+	workerID := rec.WorkerID
+	if !found || workerID < 0 || workerID >= len(s.runners) {
+		workerID = workerIDFor(sessionKey, len(s.runners))
+	}
+	return s.runners[workerID], workerID
+}
+
+func (s *Server) runOneWithRunner(ctx context.Context, item github.Review, selected reviewRunner) {
 	if item.Intent == "" {
 		item.Intent = github.IntentReview
 	}
@@ -235,10 +294,12 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		slog.Error("记录运行状态失败", "error", err)
 		return
 	}
+	existing, found := s.store.Get(item.SessionKey)
+	selected, workerID := s.runnerForRecord(item.SessionKey, existing, found)
 	// Once an automatic attempt actually starts, reserve its SHA even if setup fails.
 	// Merely queued attempts remain recoverable after a process restart.
 	if item.Comment == "" {
-		reserved, err := s.store.ReserveAutoHead(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA})
+		reserved, err := s.store.ReserveAutoHead(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, WorkerID: workerID})
 		if err != nil {
 			activity.Stage = "storage"
 			slog.Error("记录自动审查提交失败", "error", err)
@@ -274,10 +335,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 
 	switch item.Intent {
 	case github.IntentRemember:
-		s.runRemember(item, &activity)
+		s.runRememberWithRunner(item, &activity, selected)
 		return
 	case github.IntentFix:
-		if !s.runner.FixEnabled() {
+		if !selected.FixEnabled() {
 			s.runFixUnsupported(item, &activity)
 			return
 		}
@@ -285,7 +346,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 			s.runFixAuthorDenied(item, &activity)
 			return
 		}
-		s.runFix(ctx, item, &activity)
+		s.runFixWithRunner(ctx, item, &activity, selected, workerID)
 		return
 	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
@@ -293,17 +354,17 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
-	existing, _ := s.store.Get(item.SessionKey)
 	activity.Stage = "model"
 	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
-	result, err := s.runner.Review(ctx, agent.ReviewInput{
-		Review:    item,
-		WorkDir:   ws.Dir,
-		SessionID: existing.SessionID,
+	result, err := selected.Review(ctx, agent.ReviewInput{
+		Review:       item,
+		WorkDir:      ws.Dir,
+		SessionID:    existing.SessionID,
+		RoleSessions: existing.RoleSessions,
 	})
 	storageFailed := false
 	if result.SessionID != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID, RoleSessions: result.RoleSessions, WorkerID: workerID}); saveErr != nil {
 			storageFailed = true
 			activity.State, activity.Stage = "failed", "storage"
 			slog.Error("保存审查会话失败", "pr", item.SessionKey, "error", saveErr)
@@ -337,6 +398,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 }
 
 func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activity) {
+	s.runFixWithRunner(ctx, item, a, s.runner, 0)
+}
+
+func (s *Server) runFixWithRunner(ctx context.Context, item github.Review, a *store.Activity, selected reviewRunner, workerID int) {
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
 		s.postFailure(item, "准备仓库失败", err)
@@ -345,14 +410,14 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 	existing, _ := s.store.Get(item.SessionKey)
 	a.Stage = "model"
 	// Diff is intentionally empty: the model pulls tools instead of a pinned bulk patch (issue #21).
-	result, err := s.runner.Fix(ctx, agent.ReviewInput{
+	result, err := selected.Fix(ctx, agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
 	})
 	storageFailed := false
 	if result.SessionID != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID, WorkerID: workerID}); saveErr != nil {
 			storageFailed = true
 			a.State, a.Stage = "failed", "storage"
 			slog.Error("保存修复会话失败", "pr", item.SessionKey, "error", saveErr)
@@ -387,7 +452,7 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 		return
 	}
 	if pub.Changed && pub.CommitSHA != "" {
-		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA, SessionID: result.SessionID}); saveErr != nil {
+		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: pub.CommitSHA, SessionID: result.SessionID, WorkerID: workerID}); saveErr != nil {
 			storageFailed = true
 			a.State, a.Stage = "failed", "storage"
 			slog.Error("保存修复提交记录失败", "pr", item.SessionKey, "error", saveErr)
@@ -411,6 +476,10 @@ func publishMessage(item github.Review, _ string) string {
 }
 
 func (s *Server) runRemember(item github.Review, a *store.Activity) {
+	s.runRememberWithRunner(item, a, s.runner)
+}
+
+func (s *Server) runRememberWithRunner(item github.Review, a *store.Activity, selected reviewRunner) {
 	note := strings.TrimSpace(item.Instruction)
 	if note == "" {
 		if _, err := s.postComment(item, "没有可记住的内容。用法：`@"+strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")+" remember <事实>`"); err != nil {
@@ -422,7 +491,7 @@ func (s *Server) runRemember(item github.Review, a *store.Activity) {
 		return
 	}
 	content := fmt.Sprintf("仓库 %s 的人工补充记忆：%s", item.Repo, note)
-	if err := s.runner.RememberProject(content); err != nil {
+	if err := selected.RememberProject(content); err != nil {
 		slog.Error("remember 失败", "pr", item.SessionKey, "error", err)
 		s.postFailure(item, "写入项目记忆失败", err)
 		return

@@ -12,13 +12,18 @@ import (
 // reviewTools 是一次审查挂进模型的只读工具。
 // 它们只看本次检出，并把结论收成结构化笔记。
 type reviewTools struct {
-	scope review.ToolScope
-	notes *review.Notes
-	reads *readProgress
+	scope  review.ToolScope
+	notes  *review.Notes
+	reads  *readProgress
+	source string
 }
 
-func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress) error {
-	tools := reviewTools{scope: scope, notes: notes, reads: reads}
+func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress, source ...string) error {
+	role := ""
+	if len(source) > 0 {
+		role = strings.TrimSpace(source[0])
+	}
+	tools := reviewTools{scope: scope, notes: notes, reads: reads, source: role}
 	specs := []sdk.ToolSpec{
 		{
 			Name:        "pr_diff_stat",
@@ -78,6 +83,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 				"severity": {Type: "string", Description: "严重 或 建议", Required: true},
 				"path":     {Type: "string", Description: "相关文件的相对路径，可空", Required: false},
 				"line":     {Type: "number", Description: "相关行号，可空", Required: false},
+				"source":   {Type: "string", Description: "证据来源：地图、记忆、行为、测试或静态", Required: false},
 				"body":     {Type: "string", Description: "这一条意见的正文", Required: true},
 			},
 			Handler:     tools.note,
@@ -147,7 +153,11 @@ func (t reviewTools) symbols(_ map[string]any) (string, error) {
 }
 
 func (t reviewTools) note(args map[string]any) (string, error) {
-	if err := t.notes.Add(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "body")); err != nil {
+	source := argString(args, "source")
+	if source == "" {
+		source = t.source
+	}
+	if err := t.notes.AddSource(source, argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "body")); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil

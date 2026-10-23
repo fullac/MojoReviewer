@@ -125,6 +125,8 @@ go vet ./...
 
 完整边界与流程见 [`AGENTS.md`](AGENTS.md)。
 
+不同 worker 使用独立的 LuckyAgent runtime、会话家目录和工具注册表；同一个 PR 按固定的地图、记忆、行为、测试和静态分工顺序运行，宿主静态检查结果与带来源的 `review_note` 汇总为一条评论。
+
 ## 安全边界（摘要）
 
 - Webhook：secret 必填、body ≤ 2 MiB、HMAC；队列 32，满则 429。

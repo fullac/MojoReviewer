@@ -1,6 +1,7 @@
 package projectmem
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -30,6 +31,13 @@ func TestStoreRoundTrip(t *testing.T) {
 	got, ok := st2.Get("acme/web")
 	if !ok || got.HeadSHA != "abc" || got.Indexed["README.md"].Size != 12 {
 		t.Fatalf("roundtrip: %+v ok=%v", got, ok)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Fatalf("project memory permissions=%o, want 600", perm)
 	}
 }
 

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,10 +11,14 @@ import (
 
 // Record 记住一个 PR 审查到哪个提交、用哪个 LuckyAgent 会话。
 type Record struct {
-	Repo      string `json:"repo"`
-	Number    int    `json:"number"`
-	HeadSHA   string `json:"head_sha"`
-	SessionID string `json:"session_id"`
+	Repo         string            `json:"repo"`
+	Number       int               `json:"number"`
+	HeadSHA      string            `json:"head_sha"`
+	SessionID    string            `json:"session_id"`
+	RoleSessions map[string]string `json:"role_sessions,omitempty"`
+	// WorkerID pins a PR session to the SDK runtime that owns its tool registry.
+	// Zero is the legacy/default worker and keeps old records compatible.
+	WorkerID int `json:"worker_id,omitempty"`
 	// AutoHeads records started automatic attempts, independently of the latest
 	// session head. Explicit comment/GUI reviews do not consume another attempt.
 	AutoHeads []string `json:"auto_heads"`
@@ -60,6 +65,9 @@ func (s *Store) Get(key string) (Record, bool) {
 	defer s.mu.Unlock()
 	rec, ok := s.data[key]
 	rec.AutoHeads = slices.Clone(rec.AutoHeads)
+	if rec.RoleSessions != nil {
+		rec.RoleSessions = maps.Clone(rec.RoleSessions)
+	}
 	return rec, ok
 }
 
@@ -90,6 +98,12 @@ func (s *Store) ReserveAutoHead(key string, rec Record) (bool, error) {
 func (s *Store) Put(key string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if rec.WorkerID == 0 {
+		rec.WorkerID = s.data[key].WorkerID
+	}
+	if rec.RoleSessions == nil {
+		rec.RoleSessions = maps.Clone(s.data[key].RoleSessions)
+	}
 	// Session updates must not discard reservations for older heads.
 	rec.AutoHeads = slices.Clone(s.data[key].AutoHeads)
 	if rec.AutoHeads == nil {

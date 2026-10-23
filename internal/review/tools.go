@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"go/ast"
+	"go/format"
 	"go/parser"
 	"go/token"
 	"os"
@@ -28,6 +29,53 @@ const (
 // ToolScope 是一次审查的只读范围。所有路径都必须落在 Dir 内。
 type ToolScope struct {
 	Dir string
+}
+
+// StaticChecks performs bounded, read-only host checks on changed Go files.
+// It never executes repository code and returns evidence for the model.
+func (s ToolScope) StaticChecks() (string, error) {
+	if err := s.require(); err != nil {
+		return "", err
+	}
+	out, err := gitOutput(s.Dir, "diff", "--name-only", "-z", mergeBaseRef, "HEAD")
+	if err != nil {
+		return "", err
+	}
+	var lines []string
+	for _, rel := range strings.Split(out, "\x00") {
+		rel = strings.TrimSpace(rel)
+		if rel == "" || !strings.HasSuffix(strings.ToLower(rel), ".go") {
+			continue
+		}
+		clean, err := s.clean(rel)
+		if err != nil {
+			lines = append(lines, rel+": 路径校验失败")
+			continue
+		}
+		abs := filepath.Join(s.Dir, filepath.FromSlash(clean))
+		raw, err := os.ReadFile(abs)
+		if err != nil {
+			// Deleted files are covered by the patch and need no source parse.
+			continue
+		}
+		fset := token.NewFileSet()
+		if _, err := parser.ParseFile(fset, clean, raw, parser.AllErrors); err != nil {
+			lines = append(lines, fmt.Sprintf("%s: Go 语法错误：%s", clean, truncate(err.Error(), 240)))
+			continue
+		}
+		formatted, err := format.Source(raw)
+		if err != nil {
+			lines = append(lines, fmt.Sprintf("%s: gofmt 无法格式化：%s", clean, truncate(err.Error(), 240)))
+			continue
+		}
+		if !bytes.Equal(formatted, raw) {
+			lines = append(lines, clean+": 未通过 gofmt")
+		}
+	}
+	if len(lines) == 0 {
+		return "静态检查（宿主）：改动的 Go 文件通过语法解析和 gofmt；没有执行仓库代码。", nil
+	}
+	return clip("静态检查（宿主）：\n- "+strings.Join(lines, "\n- ")+"\n未执行仓库代码。", 8000), nil
 }
 
 // Stat 返回文件地图的第一页。继续读取请使用 StatPage。

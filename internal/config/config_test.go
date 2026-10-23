@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -190,5 +191,27 @@ func TestLogLevelValidation(t *testing.T) {
 	writeConfig(t, `{"log_level":"trace","agent":{"api_key":"fixture"},"github":{"webhook_secret":"fixture"}}`)
 	if _, err := Load(); err == nil {
 		t.Fatal("invalid log_level accepted")
+	}
+}
+
+func TestReviewConcurrencyDefaultsAndRange(t *testing.T) {
+	t.Chdir(t.TempDir())
+	writeConfig(t, `{"agent":{"api_key":"fixture"},"github":{"webhook_secret":"fixture"}}`)
+	cfg, err := Load()
+	if err != nil || cfg.Agent.ReviewConcurrency != 2 {
+		t.Fatalf("default concurrency=%d err=%v", cfg.Agent.ReviewConcurrency, err)
+	}
+	for _, value := range []int{1, 4} {
+		writeConfig(t, fmt.Sprintf(`{"agent":{"api_key":"fixture","review_concurrency":%d},"github":{"webhook_secret":"fixture"}}`, value))
+		cfg, err = Load()
+		if err != nil || cfg.Agent.ReviewConcurrency != value {
+			t.Fatalf("concurrency=%d normalized=%d err=%v", value, cfg.Agent.ReviewConcurrency, err)
+		}
+	}
+	for _, value := range []int{-1, 5} {
+		writeConfig(t, fmt.Sprintf(`{"agent":{"api_key":"fixture","review_concurrency":%d},"github":{"webhook_secret":"fixture"}}`, value))
+		if _, err := Load(); err == nil {
+			t.Fatalf("invalid concurrency %d accepted", value)
+		}
 	}
 }

@@ -68,6 +68,13 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 	if !strings.Contains(stat, "calc.go") {
 		t.Fatalf("stat 缺少文件:\n%s", stat)
 	}
+	static, err := scope.StaticChecks()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(static, "静态检查（宿主）") || !strings.Contains(static, "通过语法解析和 gofmt") {
+		t.Fatalf("静态检查结果异常:\n%s", static)
+	}
 	diff, err := scope.FileDiff("calc.go")
 	if err != nil {
 		t.Fatal(err)
@@ -112,6 +119,16 @@ func TestNotesRender(t *testing.T) {
 	got := notes.Render()
 	if !strings.HasPrefix(got, BotPrefix) || !strings.Contains(got, "calc.go:4") || !strings.Contains(got, "建议\n无") {
 		t.Fatalf("评论格式异常:\n%s", got)
+	}
+}
+
+func TestNotesRenderIncludesEvidenceSource(t *testing.T) {
+	notes := &Notes{}
+	if err := notes.AddSource("静态", "建议", "go.mod", 3, "依赖版本没有锁定"); err != nil {
+		t.Fatal(err)
+	}
+	if got := notes.Render(); !strings.Contains(got, "[静态]") || !strings.Contains(got, "go.mod:3") {
+		t.Fatalf("source/path missing: %s", got)
 	}
 }
 

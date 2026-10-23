@@ -50,6 +50,12 @@ class ManagerTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.m.save_config(cfg)
 
+    def test_review_concurrency_is_saved_and_bounded(self):
+        self.m.save_config({"agent": {"review_concurrency": 4}})
+        self.assertEqual(json.loads(self.m.path.read_text())["agent"]["review_concurrency"], 4)
+        with self.assertRaises(ValueError):
+            self.m.save_config({"agent": {"review_concurrency": 5}})
+
     def test_durations_match_go_positive_duration_format(self):
         for duration in ("300s","20m","1h2m3.5s",".5m","1ms"):
             self.assertTrue(valid_duration(duration))

@@ -20,6 +20,23 @@ type readProgress struct {
 	duplicates int
 }
 
+func (p *readProgress) merge(other *readProgress) {
+	if p == nil || other == nil {
+		return
+	}
+	other.mu.Lock()
+	defer other.mu.Unlock()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil {
+		p.seen = make(map[readKey]bool)
+	}
+	for key := range other.seen {
+		p.seen[key] = true
+	}
+	p.duplicates += other.duplicates
+}
+
 func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, error) {
 	if p == nil {
 		return fetch()

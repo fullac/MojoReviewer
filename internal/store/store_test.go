@@ -28,6 +28,24 @@ func TestStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestWorkerIDSurvivesSessionUpdates(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reviews.json")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess", WorkerID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Put("acme/web#7", Record{Repo: "acme/web", Number: 7, SessionID: "sess-2"}); err != nil {
+		t.Fatal(err)
+	}
+	rec, ok := s.Get("acme/web#7")
+	if !ok || rec.WorkerID != 2 || rec.SessionID != "sess-2" {
+		t.Fatalf("record=%+v ok=%v", rec, ok)
+	}
+}
+
 func TestAutomaticHeadsSurviveSessionUpdatesAndRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "reviews.json")
 	s, err := Open(path)
