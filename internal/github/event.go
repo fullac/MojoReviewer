@@ -24,6 +24,7 @@ type Review struct {
 	Author      string
 	HTMLURL     string
 	Comment     string
+	CommentID   int64 // triggering issue comment; zero for local GUI requests
 	Instruction string
 	Intent      Intent
 	SessionKey  string
@@ -92,6 +93,7 @@ func parseComment(body []byte, triggerUser string, allowed map[string]bool) (*Re
 			} `json:"pull_request"`
 		} `json:"issue"`
 		Comment struct {
+			ID   int64  `json:"id"`
 			Body string `json:"body"`
 			User struct {
 				Login string `json:"login"`
@@ -116,6 +118,7 @@ func parseComment(body []byte, triggerUser string, allowed map[string]bool) (*Re
 		return review, err
 	}
 	review.Comment = payload.Comment.Body
+	review.CommentID = payload.Comment.ID
 	intent, instruction := ParseIntent(payload.Comment.Body, triggerUser)
 	review.Intent = intent
 	review.Instruction = instruction

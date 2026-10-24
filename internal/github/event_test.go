@@ -78,9 +78,9 @@ func TestParseIgnoresDraftAndOtherRepos(t *testing.T) {
 }
 
 func TestParseCommentRequiresMention(t *testing.T) {
-	body := []byte(`{"action":"created","issue":{"number":7,"title":"修复登录","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"body":"@mojo 再看一下空指针","user":{"login":"ada"}},"repository":{"full_name":"acme/web","clone_url":"https://github.com/acme/web.git"}}`)
+	body := []byte(`{"action":"created","issue":{"number":7,"title":"修复登录","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"id":6382461298,"body":"@mojo 再看一下空指针","user":{"login":"ada"}},"repository":{"full_name":"acme/web","clone_url":"https://github.com/acme/web.git"}}`)
 	got, err := ParseWebhook("issue_comment", body, "@mojo", nil)
-	if err != nil || got == nil || got.Comment == "" {
+	if err != nil || got == nil || got.Comment == "" || got.CommentID != 6382461298 {
 		t.Fatalf("应触发评论审查: %+v %v", got, err)
 	}
 	if got.Intent != IntentReview || got.Instruction != "再看一下空指针" {

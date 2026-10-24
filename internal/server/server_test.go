@@ -93,6 +93,13 @@ func testServer(t *testing.T, response, failure string) (*Server, *recordingRunn
 		"gh": `#!/bin/sh
 case "$1" in
   api)
+    case "$*" in
+      */reactions*)
+        printf '%s\n' "$@" >> "$MOJO_TEST_REACTION"
+        if [ "$MOJO_TEST_REACTION_FAILURE" = "1" ]; then exit 1; fi
+        exit 0
+        ;;
+    esac
     printf '%s\n' "$@" >> "$MOJO_TEST_API"
     if [ -s "$MOJO_TEST_FAILURE" ]; then cat "$MOJO_TEST_FAILURE" >&2; exit 1; fi
     cat "$MOJO_TEST_RESPONSE"
@@ -113,6 +120,8 @@ esac
 	}
 	apiPath, commentPath := filepath.Join(dir, "api"), filepath.Join(dir, "comment")
 	t.Setenv("MOJO_TEST_API", apiPath)
+	t.Setenv("MOJO_TEST_REACTION", filepath.Join(dir, "reaction"))
+	t.Setenv("MOJO_TEST_REACTION_FAILURE", "")
 	t.Setenv("MOJO_TEST_COMMENT", commentPath)
 	t.Setenv("MOJO_TEST_RESPONSE", filepath.Join(dir, "response"))
 	t.Setenv("MOJO_TEST_FAILURE", filepath.Join(dir, "failure"))
@@ -136,7 +145,7 @@ esac
 
 func queueComment(t *testing.T, s *Server) github.Review {
 	t.Helper()
-	body := `{"action":"created","issue":{"number":7,"title":"旧标题","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"body":"@mojo 再看一下","user":{"login":"commenter"}},"repository":{"full_name":"acme/web"}}`
+	body := `{"action":"created","issue":{"number":7,"title":"旧标题","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"id":6382461298,"body":"@mojo 再看一下","user":{"login":"commenter"}},"repository":{"full_name":"acme/web"}}`
 	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
 	_, _ = mac.Write([]byte(body))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -197,12 +206,23 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	if err := s.store.Put("acme/web#7", store.Record{Repo: "acme/web", Number: 7, HeadSHA: "old-head", SessionID: "existing-session"}); err != nil {
 		t.Fatal(err)
 	}
-	s.runOne(context.Background(), queueComment(t, s))
+	queued := queueComment(t, s)
+	if _, err := os.Stat(os.Getenv("MOJO_TEST_REACTION")); !os.IsNotExist(err) {
+		t.Fatal("queued task reacted before starting")
+	}
+	runner.onReview = func() {
+		raw, err := os.ReadFile(os.Getenv("MOJO_TEST_REACTION"))
+		if err != nil || !strings.Contains(string(raw), "repos/acme/web/issues/comments/6382461298/reactions") {
+			t.Fatalf("missing trigger comment reaction before model: %s %v", raw, err)
+		}
+	}
+	s.runOne(context.Background(), queued)
+	runner.onReview = nil
 	if len(runner.inputs) != 1 {
 		t.Fatalf("评论触发未进入审查: %+v", runner.inputs)
 	}
 	input := runner.inputs[0]
-	if input.SessionID != "existing-session" || input.Review.Comment != "@mojo 再看一下" || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
+	if input.SessionID != "existing-session" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
 		t.Fatalf("审查上下文错误: %+v", input)
 	}
 	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/review/base") != base {
