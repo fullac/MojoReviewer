@@ -119,7 +119,7 @@ func formatNote(item Note, number int) string {
 		title = "审查意见"
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "**%d. %s**", number, title)
+	fmt.Fprintf(&b, "**%d. %s**", number, escapeNoteTitle(title))
 	where := strings.TrimSpace(item.Path)
 	if where != "" {
 		if item.Line > 0 {
@@ -133,5 +133,18 @@ func formatNote(item Note, number int) string {
 		fmt.Fprintf(&b, "\n\n📍 %s %s %s", fence, where, fence)
 	}
 	b.WriteString("\n\n" + item.Body)
+	return b.String()
+}
+
+// escapeNoteTitle 将标题作为纯文本嵌入加粗结构；正文仍保留 Markdown。
+func escapeNoteTitle(title string) string {
+	var b strings.Builder
+	for _, r := range title {
+		// Markdown 支持反斜杠转义 ASCII 标点，包括反斜杠本身。
+		if r >= '!' && r <= '/' || r >= ':' && r <= '@' || r >= '[' && r <= '`' || r >= '{' && r <= '~' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
 	return b.String()
 }

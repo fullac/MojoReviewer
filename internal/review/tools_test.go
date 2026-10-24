@@ -167,3 +167,29 @@ func TestNotesRenderEmptyAndOptionalFields(t *testing.T) {
 		t.Fatal("multiline title must be rejected without recording a note")
 	}
 }
+
+func TestNotesRenderEscapesTitleWithoutChangingBody(t *testing.T) {
+	body := "- **建议修复：** 保留 `value`。\n\n  ```go\n  return value\n  ```"
+	for _, tt := range []struct {
+		name, title, escaped string
+	}{
+		{"plain", "错误未返回", "错误未返回"},
+		{"emphasis", "**强调**与_斜体_", `\*\*强调\*\*与\_斜体\_`},
+		{"code", "`value` 未校验", "\\`value\\` 未校验"},
+		{"backslash", `\**转义边界`, `\\\*\*转义边界`},
+		{"link", "[查看](target)", `\[查看\]\(target\)`},
+		{"html and entity", "<b>标题</b> &amp;", `\<b\>标题\<\/b\> \&amp\;`},
+		{"strikethrough", "~~删除~~", `\~\~删除\~\~`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var notes Notes
+			if err := notes.AddWithTitle("建议", "", 0, tt.title, body); err != nil {
+				t.Fatal(err)
+			}
+			want := BotPrefix + "\n\n本轮记录 **1 条建议**。\n\n### 🟡 建议\n\n**1. " + tt.escaped + "**\n\n" + body
+			if got := notes.Render(); got != want {
+				t.Fatalf("title must remain plain text inside host emphasis, preserving body Markdown:\ngot: %s\nwant: %s", got, want)
+			}
+		})
+	}
+}
