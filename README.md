@@ -124,6 +124,8 @@ go vet ./...
 
 自动审查接受 `opened`、`reopened`、`synchronize`、`ready_for_review`，跳过草稿。评论必须提及完整账号：配置为 `mojo` 时，`@mojo-bot`、`name@mojo` 不会触发。
 
+任务真正开始处理时，Mojo 会添加 👀 reaction：自动审查加在 PR 正文，`@` 触发加在原评论；排队中、被忽略或去重的事件不会提前添加。GUI 本地重审没有原评论，因此跳过 reaction。同一账号已有的 👀 会复用，不代表本轮已完成；最终结果以审查评论为准。reaction 请求最多等待 5 秒，失败只记日志，继续审查。使用细粒度令牌时需授予 Issues 写权限。
+
 ## 配置要点
 
 配置文件：仓库内隐藏目录下的配置（已 gitignore，勿提交密钥）。字段见 [`config.example.json`](config.example.json)。

@@ -13,6 +13,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次，已开始的自动尝试持久化到 `auto_heads`，失败也保留。带完整 @触发用户 的评论或 GUI 显式重审可以再审，并续用已有会话。仅排队未执行的自动任务可在重启后补齐；中断的 GitHub 评论在投递保留期内请求补送，本地 GUI 重审需再次点击。
 - 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；改工作区后由宿主 commit/push 到 head 分支）。
+- 任务写入 running 回执、完成自动 head 去重后，由宿主通过 `gh api` 添加 👀 reaction；自动任务指向 PR，评论任务指向 webhook 的 `comment.id`。GUI 合成评论没有 ID，跳过表情。调用最多 5 秒，失败不阻断任务；不交给模型，不新增 LH 工具。
 - 自己发出的评论以 `【MOJORviewer🥕】` 开头。解析 webhook 时跳过新前缀及旧前缀 `【MojoReviewer】`，避免自己触发自己。
 - `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
 - 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。

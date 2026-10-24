@@ -199,6 +199,9 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	slog.Info("开始审查", "pr", item.SessionKey)
+	if err := github.ReactStarted(ctx, item, s.cfg.GitHub.Host); err != nil {
+		slog.Warn("添加开始表情失败，继续处理任务", "pr", item.SessionKey, "error", err)
+	}
 
 	if item.Comment != "" {
 		activity.Stage = "metadata"
