@@ -8,13 +8,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
@@ -67,6 +70,226 @@ func TestConcurrentAutomaticDeliveriesQueueOnce(t *testing.T) {
 	}
 }
 
+func TestDifferentPullRequestsRunTogether(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	s.cfg.Agent.ReviewConcurrency = 2
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	runner.onReview = func() {
+		runner.mu.Lock()
+		key := runner.inputs[len(runner.inputs)-1].Review.SessionKey
+		runner.mu.Unlock()
+		started <- key
+		<-release
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.worker(ctx)
+	go s.worker(ctx)
+	s.enqueue(localHead(t, 7, "acme/web#7"))
+	s.enqueue(localHead(t, 8, "acme/web#8"))
+	seen := map[string]bool{}
+	for i := 0; i < 2; i++ {
+		select {
+		case key := <-started:
+			seen[key] = true
+		case <-time.After(5 * time.Second):
+			t.Fatal("reviews did not overlap", seen)
+		}
+	}
+	if !seen["acme/web#7"] || !seen["acme/web#8"] {
+		t.Fatalf("started=%v", seen)
+	}
+	close(release)
+}
+
+func TestSamePullRequestStaysSerial(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	var current, peak atomic.Int32
+	release := make(chan struct{})
+	started := make(chan struct{}, 2)
+	// 用“第一次审查卡在闸门上”制造重叠窗口，而不是靠 sleep 时长碰运气。
+	runner.onReview = func() {
+		now := current.Add(1)
+		for {
+			old := peak.Load()
+			if now <= old || peak.CompareAndSwap(old, now) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+		current.Add(-1)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go s.worker(ctx)
+	go s.worker(ctx)
+	first := localHead(t, 7, "acme/web#7")
+	origin := strings.TrimPrefix(first.CloneURL, "file://")
+	if err := os.WriteFile(filepath.Join(origin, "next.txt"), []byte("next\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, origin, "add", "next.txt")
+	runGit(t, origin, "commit", "-m", "second")
+	second := first
+	second.HeadSHA = runGit(t, origin, "rev-parse", "HEAD")
+	s.enqueue(first)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first review did not start")
+	}
+	s.enqueue(second)
+	s.mu.Lock()
+	waiting := len(s.prWait[first.SessionKey])
+	s.mu.Unlock()
+	if waiting != 1 {
+		t.Fatalf("second delivery was not queued behind the active one: %d", waiting)
+	}
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second review did not run after the first finished")
+	}
+	if peak.Load() != 1 {
+		t.Fatalf("same PR overlapped: %d", peak.Load())
+	}
+}
+
+// worker 运行时只在启动时按 worker 数建立，分配按 PR 确定，不随队列顺序变化。
+func TestWorkerRuntimePinning(t *testing.T) {
+	s, _, _, _ := testServer(t, "", "")
+	var spawned []int
+	s.spawnWorker = func(workerID int) (reviewRunner, error) {
+		spawned = append(spawned, workerID)
+		return &recordingRunner{}, nil
+	}
+	if err := s.initRunners(3); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(spawned) != "[1 2]" {
+		t.Fatalf("spawned workers = %v", spawned)
+	}
+	if len(s.runners) != 3 || s.runners[0] != s.runner {
+		t.Fatalf("runners = %d", len(s.runners))
+	}
+	for _, key := range []string{"acme/web#1", "acme/web#2", "acme/web#3"} {
+		want := s.runners[workerIDFor(key, 3)]
+		if got := s.runnerFor(key); got != want {
+			t.Fatalf("%s 分配到了别的 worker", key)
+		}
+		if again := s.runnerFor(key); again != want {
+			t.Fatalf("%s 的分配不稳定", key)
+		}
+	}
+}
+
+// 缩容 worker 后，旧记录固定到的 worker 已不存在：分工会话属于那个 runtime 的
+// HomeDir，不能带过来，必须重建会话并把新的 worker 写回记录。
+func TestWorkerShrinkRebuildsStaleSessions(t *testing.T) {
+	s, _, _, _ := testServer(t, "", "")
+	workers := []*recordingRunner{}
+	s.spawnWorker = func(workerID int) (reviewRunner, error) {
+		w := &recordingRunner{}
+		workers = append(workers, w)
+		return w, nil
+	}
+	if err := s.initRunners(2); err != nil {
+		t.Fatal(err)
+	}
+	item := localReviewItem(t)
+	if err := s.store.Put(item.SessionKey, store.Record{
+		Repo: item.Repo, Number: item.Number, HeadSHA: "older-head",
+		SessionID: "stale-session", RoleSessions: map[string]string{"map": "stale-map"},
+		WorkerID: store.PinWorker(3),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s.runOneWithRunner(context.Background(), item, s.runners[0])
+
+	var served *recordingRunner
+	for _, w := range append([]*recordingRunner{s.runner.(*recordingRunner)}, workers...) {
+		w.mu.Lock()
+		n := len(w.inputs)
+		w.mu.Unlock()
+		if n > 0 {
+			served = w
+		}
+	}
+	if served == nil {
+		t.Fatal("review never ran")
+	}
+	served.mu.Lock()
+	got := served.inputs[0]
+	served.mu.Unlock()
+	if got.SessionID != "" || len(got.RoleSessions) != 0 {
+		t.Fatalf("stale sessions were reused: session=%q roles=%v", got.SessionID, got.RoleSessions)
+	}
+	rec, ok := s.store.Get(item.SessionKey)
+	if !ok {
+		t.Fatal("record missing")
+	}
+	worker, set := rec.Worker()
+	if !set || worker >= 2 {
+		t.Fatalf("record was not re-pinned to an existing worker: %d %v", worker, set)
+	}
+	if rec.SessionID == "stale-session" {
+		t.Fatal("stale session survived the re-pin")
+	}
+}
+
+// 一次 panic 不能把 PR 槽位和队列配额永久占用。
+func TestPanicReleasesPullRequestSlot(t *testing.T) {
+	s, runner, _, _ := testServer(t, "", "")
+	runner.onReview = func() { panic("boom") }
+	item := localReviewItem(t)
+	queued := item
+	queued.HeadSHA = "queued-head"
+	s.mu.Lock()
+	s.prActive[item.SessionKey] = true
+	s.prWait[item.SessionKey] = []github.Review{queued}
+	s.mu.Unlock()
+
+	s.runQueued(context.Background(), item)
+
+	s.mu.Lock()
+	active := s.prActive[item.SessionKey]
+	waiting := len(s.prWait[item.SessionKey])
+	s.mu.Unlock()
+	// 排队中的下一次尝试必须被放行：没释放槽位时 jobs 是空的，prWait 会一直留着。
+	if len(s.jobs) != 1 {
+		t.Fatalf("queued delivery was not released: %d", len(s.jobs))
+	}
+	if waiting != 0 {
+		t.Fatalf("waiting queue was not drained: %d", waiting)
+	}
+	if !active {
+		t.Fatal("released slot dropped the follow-up attempt")
+	}
+	raw, err := os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []store.Activity
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].State != "failed" {
+		t.Fatalf("panic was not recorded as a failure: %s", raw)
+	}
+}
+
+func localHead(t *testing.T, number int, key string) github.Review {
+	t.Helper()
+	item := localReviewItem(t)
+	item.Number = number
+	item.SessionKey = key
+	item.Comment = ""
+	return item
+}
+
 func TestQueueReceiptFailureDoesNotAcceptTask(t *testing.T) {
 	s, _, _, _ := testServer(t, "", "")
 	if err := os.Mkdir(filepath.Join(s.cfg.DataDir, "activity.json"), 0700); err != nil {
@@ -89,6 +312,7 @@ func TestFailedAutomaticHeadHistorySurvivesHeadChanges(t *testing.T) {
 			t.Fatal("new automatic head was not queued", w.Code)
 		}
 		item := <-s.jobs
+		s.finishPR(item.SessionKey)
 		item.CloneURL = "file://" + origin
 		s.runOne(context.Background(), item)
 	}
@@ -122,7 +346,8 @@ func TestRestartAllowsUnstartedDeliveryToBeRequeued(t *testing.T) {
 	if w := autoDeliveryRequest(s, "head", "queued-delivery"); w.Code != 202 {
 		t.Fatal(w.Code)
 	}
-	<-s.jobs
+	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	s.pending = map[string]bool{}
 	if err := s.store.InterruptActivities(); err != nil {
 		t.Fatal(err)
@@ -266,6 +491,7 @@ func TestPendingDuplicateAndFullQueue(t *testing.T) {
 	}
 
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	for i := 0; i < cap(s.jobs); i++ {
 		s.jobs <- item
 	}
@@ -302,6 +528,7 @@ func TestStartedFailedHeadReservedAcrossRestart(t *testing.T) {
 		t.Fatal(w.Code)
 	}
 	item := <-s.jobs
+	s.finishPR(item.SessionKey)
 	origin := t.TempDir()
 	runGit(t, origin, "init")
 	item.CloneURL = "file://" + origin

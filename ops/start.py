@@ -494,7 +494,7 @@ class Manager:
                 raise ValueError("请先停止 reviewer 再保存配置")
             # Merge only documented keys; preserve SDK and user-added settings on disk.
             cfg = json.loads(json.dumps(self.cfg))
-            allowed = {"agent": {"provider", "model", "api_base", "api_key", "task_timeout", "request_timeout", "max_context_tokens"},
+            allowed = {"agent": {"provider", "model", "api_base", "api_key", "task_timeout", "request_timeout", "max_context_tokens", "review_concurrency"},
                        "github": {"host", "repos", "trigger_user", "webhook_secret"},
                        "server": {"host", "port"},
                        "manager": {"reviewer_account", "admin_account", "hooks", "auto_start"}}
@@ -522,6 +522,9 @@ class Manager:
                     raise ValueError("模型配置必须是文本")
             if type(cfg.get("agent", {}).get("max_context_tokens",40000)) is not int or cfg.get("agent", {}).get("max_context_tokens",40000)<1000:
                 raise ValueError("上下文上限至少为 1000")
+            concurrency = cfg.get("agent", {}).get("review_concurrency", 2)
+            if type(concurrency) is not int or not 1 <= concurrency <= 4:
+                raise ValueError("并发审查数必须是 1 到 4")
             if not isinstance(gh.get("webhook_secret", ""), str) or not isinstance(gh.get("trigger_user", ""), str):
                 raise ValueError("GitHub 配置必须是文本")
             for key, default in (("task_timeout","20m"),("request_timeout","5m")):

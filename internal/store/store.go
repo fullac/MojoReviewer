@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,13 +11,29 @@ import (
 
 // Record 记住一个 PR 审查到哪个提交、用哪个 LuckyAgent 会话。
 type Record struct {
-	Repo      string `json:"repo"`
-	Number    int    `json:"number"`
-	HeadSHA   string `json:"head_sha"`
-	SessionID string `json:"session_id"`
+	Repo         string            `json:"repo"`
+	Number       int               `json:"number"`
+	HeadSHA      string            `json:"head_sha"`
+	SessionID    string            `json:"session_id"`
+	RoleSessions map[string]string `json:"role_sessions,omitempty"`
+	// WorkerID pins a PR session to the SDK runtime that owns its tool registry.
+	// 用指针区分「没写」和合法 worker 0：写会话不能把 worker 0 当成沿用旧值。
+	WorkerID *int `json:"worker_id,omitempty"`
 	// AutoHeads records started automatic attempts, independently of the latest
 	// session head. Explicit comment/GUI reviews do not consume another attempt.
 	AutoHeads []string `json:"auto_heads"`
+}
+
+// PinWorker 把 worker 序号写进 Record.WorkerID。
+func PinWorker(id int) *int { return &id }
+
+// Worker 返回记录上固定的 worker，以及记录是否真的带了这个字段。
+// 旧记录没有该字段，它们的会话开在基础 runtime（worker 0）下。
+func (r Record) Worker() (int, bool) {
+	if r.WorkerID == nil {
+		return 0, false
+	}
+	return *r.WorkerID, true
 }
 
 // Store 是一个 JSON 文件，按 PR 保存最近一次审查。
@@ -60,6 +77,9 @@ func (s *Store) Get(key string) (Record, bool) {
 	defer s.mu.Unlock()
 	rec, ok := s.data[key]
 	rec.AutoHeads = slices.Clone(rec.AutoHeads)
+	if rec.RoleSessions != nil {
+		rec.RoleSessions = maps.Clone(rec.RoleSessions)
+	}
 	return rec, ok
 }
 
@@ -72,6 +92,7 @@ func (s *Store) HasAutoHead(key, sha string) bool {
 
 // ReserveAutoHead persists the reservation before checkout/model work starts.
 // Failed attempts stay reserved; explicit comments/GUI actions may retry them.
+// 会话字段以调用方传入的为准：worker 变了以后旧会话必须显式清掉。
 func (s *Store) ReserveAutoHead(key string, rec Record) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -80,22 +101,34 @@ func (s *Store) ReserveAutoHead(key string, rec Record) (bool, error) {
 		return false, nil
 	}
 	rec.AutoHeads = append(slices.Clone(existing.AutoHeads), rec.HeadSHA)
-	if rec.SessionID == "" {
-		rec.SessionID = existing.SessionID
-	}
+	s.inheritWorker(key, &rec)
 	return true, s.putLocked(key, rec)
 }
 
-// Put 保存记录。同一个提交重复审查时仍更新会话 ID。
+// Put 保存记录。会话字段以传入值为准（空值就是清空），只有 auto_heads 历史
+// 会保留，worker 字段不写时沿用旧值。
 func (s *Store) Put(key string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.inheritWorker(key, &rec)
 	// Session updates must not discard reservations for older heads.
 	rec.AutoHeads = slices.Clone(s.data[key].AutoHeads)
 	if rec.AutoHeads == nil {
 		rec.AutoHeads = []string{}
 	}
 	return s.putLocked(key, rec)
+}
+
+// inheritWorker 在调用方没有指定 worker 时沿用已固定的值。
+func (s *Store) inheritWorker(key string, rec *Record) {
+	if rec.WorkerID != nil {
+		return
+	}
+	existing, ok := s.data[key]
+	if !ok || existing.WorkerID == nil {
+		return
+	}
+	rec.WorkerID = PinWorker(*existing.WorkerID)
 }
 
 func (s *Store) putLocked(key string, rec Record) error {

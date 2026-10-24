@@ -73,6 +73,8 @@ type AgentConfig struct {
 	FixMaxChangedFiles int
 	// FixMaxDiffBytes 单次 fix 可提交的 diff 字节上限。0 表示默认 200_000。
 	FixMaxDiffBytes int
+	// ReviewConcurrency 是同时审查不同 PR 的 worker 数。0 表示默认 2。
+	ReviewConcurrency int
 }
 
 type fileConfig struct {
@@ -103,6 +105,7 @@ type fileConfig struct {
 		FixMaxDiffBytes    int      `json:"fix_max_diff_bytes"`
 		MaxContextTokens   int      `json:"max_context_tokens"`
 		RequestTimeout     string   `json:"request_timeout"`
+		ReviewConcurrency  int      `json:"review_concurrency"`
 	} `json:"agent"`
 }
 
@@ -148,6 +151,13 @@ func normalize(file fileConfig) (Config, error) {
 	if contextTokens < 1000 {
 		return Config{}, fmt.Errorf("agent.max_context_tokens 必须至少为 1000")
 	}
+	concurrency := file.Agent.ReviewConcurrency
+	if concurrency == 0 {
+		concurrency = 2
+	}
+	if concurrency < 1 || concurrency > 4 {
+		return Config{}, fmt.Errorf("agent.review_concurrency 必须是 1 到 4")
+	}
 	requestTimeout := 5 * time.Minute
 	if raw := strings.TrimSpace(file.Agent.RequestTimeout); raw != "" {
 		requestTimeout, err = time.ParseDuration(raw)
@@ -187,6 +197,7 @@ func normalize(file fileConfig) (Config, error) {
 			FixAllowedAuthors:  lowerCompact(file.Agent.FixAllowedAuthors),
 			FixMaxChangedFiles: file.Agent.FixMaxChangedFiles,
 			FixMaxDiffBytes:    file.Agent.FixMaxDiffBytes,
+			ReviewConcurrency:  concurrency,
 		},
 	}
 	if cfg.Server.Port == 0 {

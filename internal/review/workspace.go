@@ -1,6 +1,8 @@
 package review
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -29,7 +31,7 @@ func prepare(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSH
 	if strings.TrimSpace(repo) == "" || strings.TrimSpace(sha) == "" {
 		return Workspace{}, fmt.Errorf("仓库或提交为空")
 	}
-	dir := filepath.Join(dataDir, "workspaces", sanitize(sessionKey))
+	dir := filepath.Join(dataDir, "workspaces", workspaceKey(sessionKey))
 	gitDir := filepath.Join(dir, ".git")
 	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
 		if err := git(dir, "fetch", "--depth", "1", "origin", sha); err != nil {
@@ -161,4 +163,11 @@ func sanitize(value string) string {
 		return "workspace"
 	}
 	return out
+}
+
+func workspaceKey(sessionKey string) string {
+	base := sanitize(sessionKey)
+	sum := sha256.Sum256([]byte(sessionKey))
+	// Keep a readable prefix while making distinct session keys collision-free.
+	return base + "-" + hex.EncodeToString(sum[:6])
 }

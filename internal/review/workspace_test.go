@@ -64,6 +64,17 @@ func TestPrepareChecksOutHeadSHA(t *testing.T) {
 	}
 }
 
+func TestWorkspaceKeySeparatesSanitizedSessionKeys(t *testing.T) {
+	a := workspaceKey("a/b-c#1")
+	b := workspaceKey("a-b/c#1")
+	if a == b {
+		t.Fatalf("distinct session keys collided: %q", a)
+	}
+	if !strings.HasPrefix(a, "a-b-c-1-") || !strings.HasPrefix(b, "a-b-c-1-") {
+		t.Fatalf("workspace keys lost readable prefix: %q %q", a, b)
+	}
+}
+
 func run(t *testing.T, dir, name string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command(name, args...)

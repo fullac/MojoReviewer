@@ -25,6 +25,9 @@ func reviewFailureComment(result agent.ReviewResult, err error) string {
 		if failure.TaskID != "" {
 			fmt.Fprintf(&b, "\n运行时任务：%s。原运行时会话的恢复指令：`继续前台任务 %s`。", failure.TaskID, failure.TaskID)
 		}
+		if len(failure.Failed) > 0 {
+			b.WriteString("\n未完成的分工：" + strings.Join(failure.Failed, "、") + "。已完成分工记录的笔记仍然有效。")
+		}
 		if failure.Coverage != "" {
 			b.WriteString("\n\n" + failure.Coverage)
 		}
