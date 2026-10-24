@@ -96,10 +96,12 @@ func TestParseCommentRequiresMention(t *testing.T) {
 	if err != nil || got == nil || got.Intent != IntentRemember || got.Instruction != "基线用 refs/review/base" {
 		t.Fatalf("remember 意图解析失败: %+v %v", got, err)
 	}
-	self := []byte(`{"action":"created","issue":{"number":7,"pull_request":{"url":"x"}},"comment":{"body":"【MojoReviewer】 @mojo 已审查","user":{"login":"bot"}},"repository":{"full_name":"acme/web"}}`)
-	got, err = ParseWebhook("issue_comment", self, "mojo", nil)
-	if err != nil || got != nil {
-		t.Fatalf("自己的评论应忽略: %+v %v", got, err)
+	for _, prefix := range []string{"【MOJORviewer🥕】", "【MojoReviewer】"} {
+		self := []byte(`{"action":"created","issue":{"number":7,"pull_request":{"url":"x"}},"comment":{"body":"` + prefix + ` @mojo 已审查","user":{"login":"bot"}},"repository":{"full_name":"acme/web"}}`)
+		got, err = ParseWebhook("issue_comment", self, "mojo", nil)
+		if err != nil || got != nil {
+			t.Fatalf("自己的评论应忽略: %+v %v", got, err)
+		}
 	}
 }
 

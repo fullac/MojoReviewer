@@ -58,7 +58,7 @@ func TestSuccessfulReviewWithoutNotesUsesHostStructure(t *testing.T) {
 		t.Fatalf("unexpected result: %+v %v", result, err)
 	}
 	if !strings.HasPrefix(result.Text, review.BotPrefix) ||
-		!strings.Contains(result.Text, "严重\n无\n\n建议\n无") ||
+		strings.Contains(result.Text, "###") ||
 		!strings.Contains(result.Text, "未记录审查意见") {
 		t.Fatalf("zero-note review lost its fixed structure: %s", result.Text)
 	}

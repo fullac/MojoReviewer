@@ -110,7 +110,7 @@ func TestNotesRender(t *testing.T) {
 		t.Fatal("非法 severity 应被拒绝")
 	}
 	got := notes.Render()
-	if !strings.HasPrefix(got, BotPrefix) || !strings.Contains(got, "calc.go:4") || !strings.Contains(got, "建议\n无") {
+	if !strings.HasPrefix(got, BotPrefix) || !strings.Contains(got, "calc.go:4") || strings.Contains(got, "🟡 建议") {
 		t.Fatalf("评论格式异常:\n%s", got)
 	}
 }
@@ -122,5 +122,74 @@ func write(t *testing.T, path, content string) {
 	}
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNotesRenderMarkdown(t *testing.T) {
+	var notes Notes
+	body := "- **问题：** 满足重试条件时仍接受任务。\n\n- **影响：** 重启后可能丢失任务。\n\n- **建议修复：** 返回保存错误。\n\n  *建议修改示例：*\n\n  ```go\n  if err != nil {\n  \treturn err\n  }\n  ```"
+	if err := notes.AddWithTitle("建议", "test.go", 0, "补充重复投递测试", "- **建议调整：** 覆盖重复请求。"); err != nil {
+		t.Fatal(err)
+	}
+	if err := notes.AddWithTitle("严重", "server.go", 123, "保存失败仍接受任务", body); err != nil {
+		t.Fatal(err)
+	}
+	got := notes.Render()
+	for _, want := range []string{
+		BotPrefix + "\n\n本轮记录 **1 个严重问题、1 条建议**。",
+		"### 🔴 严重问题\n\n**1. 保存失败仍接受任务**",
+		"📍 ` server.go:123 `\n\n" + body,
+		"### 🟡 建议\n\n**2. 补充重复投递测试**",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in comment:\n%s", want, got)
+		}
+	}
+	if strings.Index(got, "### 🔴") > strings.Index(got, "### 🟡") {
+		t.Fatal("严重问题应优先展示")
+	}
+}
+
+func TestNotesRenderEmptyAndOptionalFields(t *testing.T) {
+	var empty *Notes
+	if got := empty.Render(); got != BotPrefix+"\n\n本轮未记录审查意见；这不代表所有改动均已核实。" {
+		t.Fatalf("empty result must not claim a complete review: %s", got)
+	}
+	var notes Notes
+	if err := notes.Add("建议", "", 0, "保留旧调用的正文"); err != nil {
+		t.Fatal(err)
+	}
+	got := notes.Render()
+	if strings.Contains(got, "🔴") || strings.Contains(got, "📍") || !strings.Contains(got, "**1. 审查意见**\n\n保留旧调用的正文") {
+		t.Fatalf("optional fields: %s", got)
+	}
+	if err := notes.AddWithTitle("建议", "", 0, "标题\n换行", "内容"); err == nil || notes.Len() != 1 {
+		t.Fatal("multiline title must be rejected without recording a note")
+	}
+}
+
+func TestNotesRenderEscapesTitleWithoutChangingBody(t *testing.T) {
+	body := "- **建议修复：** 保留 `value`。\n\n  ```go\n  return value\n  ```"
+	for _, tt := range []struct {
+		name, title, escaped string
+	}{
+		{"plain", "错误未返回", "错误未返回"},
+		{"emphasis", "**强调**与_斜体_", `\*\*强调\*\*与\_斜体\_`},
+		{"code", "`value` 未校验", "\\`value\\` 未校验"},
+		{"backslash", `\**转义边界`, `\\\*\*转义边界`},
+		{"link", "[查看](target)", `\[查看\]\(target\)`},
+		{"html and entity", "<b>标题</b> &amp;", `\<b\>标题\<\/b\> \&amp\;`},
+		{"strikethrough", "~~删除~~", `\~\~删除\~\~`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var notes Notes
+			if err := notes.AddWithTitle("建议", "", 0, tt.title, body); err != nil {
+				t.Fatal(err)
+			}
+			want := BotPrefix + "\n\n本轮记录 **1 条建议**。\n\n### 🟡 建议\n\n**1. " + tt.escaped + "**\n\n" + body
+			if got := notes.Render(); got != want {
+				t.Fatalf("title must remain plain text inside host emphasis, preserving body Markdown:\ngot: %s\nwant: %s", got, want)
+			}
+		})
 	}
 }

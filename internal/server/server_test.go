@@ -18,8 +18,32 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
+
+func TestRenderedReviewCommentCannotTriggerWebhook(t *testing.T) {
+	if review.BotPrefix != github.BotPrefix {
+		t.Fatal("发布评论与 webhook 过滤的前缀必须一致")
+	}
+	var notes review.Notes
+	if err := notes.Add("建议", "", 0, "@mojo 检查错误分支"); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"action":     "created",
+		"repository": map[string]any{"full_name": "acme/web"},
+		"issue":      map[string]any{"number": 7, "pull_request": map[string]any{"url": "https://example.test/pr/7"}},
+		"comment":    map[string]any{"body": notes.Render(), "user": map[string]any{"login": "bot"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := github.ParseWebhook("issue_comment", payload, "mojo", nil)
+	if err != nil || item != nil {
+		t.Fatalf("带触发账号的宿主评论应被忽略: %+v %v", item, err)
+	}
+}
 
 type recordingRunner struct {
 	inputs       []agent.ReviewInput
@@ -198,7 +222,7 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("审查记录未更新: %+v", rec)
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MojoReviewer】\n\n审查完成") {
+	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MOJORviewer🥕】\n\n审查完成") {
 		t.Fatalf("没有把审查结果发到配置的主机: %s %v", comment, err)
 	}
 	// 自动 PR 事件已有完整元数据，无需额外查询 GitHub。
