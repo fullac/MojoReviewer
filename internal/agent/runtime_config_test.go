@@ -52,6 +52,9 @@ func TestSDKLoadsManagedModelContextAndTimeout(t *testing.T) {
 	if got.Context.MaxContextTokens != 40000 || got.Limits.TimeoutSeconds != 300 || got.Agent.TimeoutSeconds != 300 {
 		t.Fatalf("effective context or timeout differs from config")
 	}
+	if got.Agent.Foreground.Enabled == nil || *got.Agent.Foreground.Enabled || got.Agent.MaxIterations != 30 {
+		t.Fatal("SDK did not load the host-managed ordinary loop")
+	}
 	if got.LlmProvider.Model != "gpt-test" || got.LlmProvider.Name != "openai" {
 		t.Fatal("SDK replaced configured model")
 	}

@@ -9,6 +9,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 模型工具必须落在这次检出里。`refs/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/review/merge-base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
+- 本项目始终不修改 LH 源码或引入私有补丁。Mojo 的隔离 SDK 配置关闭 `agent.foreground.enabled`，普通工具循环最多 30 次迭代；任务总超时、审查状态和发布由宿主管理，会话仍可复用，新任务不生成 foreground 检查点。
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次，已开始的自动尝试持久化到 `auto_heads`，失败也保留。带完整 @触发用户 的评论或 GUI 显式重审可以再审，并续用已有会话。仅排队未执行的自动任务可在重启后补齐；中断的 GitHub 评论在投递保留期内请求补送，本地 GUI 重审需再次点击。
 - 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；改工作区后由宿主 commit/push 到 head 分支）。
@@ -93,7 +94,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 `pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
 
-只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
+只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。普通循环的重复保护可能返回固定停止文案和空错误，宿主必须转为执行失败，保留笔记并阻止未完成的 fix 发布。
 
 模型中断时保留已记录的笔记和读取范围，发布带「审查未完成」的失败说明；可识别的 foreground 任务只公开任务 ID 与原运行时恢复指令，不公开原始错误/prompt。宿主日志同样只记录归类原因和任务 ID。失败说明发布失败时，日志同时保留评论错误和这条归类原因。失败说明发布后仍记录 `failed/model`，只补充评论 URL，不能标记为审查完成。
 

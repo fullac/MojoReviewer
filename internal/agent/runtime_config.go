@@ -31,8 +31,15 @@ func writeRuntimeConfig(cfg config.AgentConfig) error {
 	raw, err := json.Marshal(map[string]any{
 		"models":  map[string]any{"active": map[string]string{"chat": cfg.Model, "compact": cfg.Model}, "endpoints": map[string]any{"chat": endpoint, "compact": endpoint}},
 		"context": map[string]int{"max_context_tokens": tokens},
-		"agent":   map[string]any{"timeout_seconds": seconds, "simple_local_inspection": map[string]int{"timeout_seconds": seconds}},
-		"limits":  map[string]int{"timeout_seconds": seconds},
+		// Mojo owns task deadlines and publication. The SDK's foreground completion
+		// verifier receives no acceptance criteria for these embedded chat turns.
+		"agent": map[string]any{
+			"foreground":              map[string]bool{"enabled": false},
+			"max_iterations":          30,
+			"timeout_seconds":         seconds,
+			"simple_local_inspection": map[string]int{"timeout_seconds": seconds},
+		},
+		"limits": map[string]int{"timeout_seconds": seconds},
 	})
 	if err != nil {
 		return err

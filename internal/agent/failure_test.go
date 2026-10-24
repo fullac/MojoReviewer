@@ -40,6 +40,21 @@ func TestInterruptedReviewWithoutNotesDoesNotClaimSuccess(t *testing.T) {
 	}
 }
 
+func TestOrdinaryLoopStopIsFailureWithoutExposingToolOutput(t *testing.T) {
+	text := "Detected repeated tool-call loop and stopped early to avoid timeout.\nLatest tool outputs:\n- read_repo_file: private-test-value"
+	result, err := reviewResult("session-loop", text, &review.Notes{}, &readProgress{}, nil)
+	var failure *ReviewFailure
+	if !errors.As(err, &failure) || !errors.Is(err, errRepeatedToolLoop) || result.Noted || result.Text != "" {
+		t.Fatalf("repeat guard became a completed review: %+v %v", result, err)
+	}
+	if strings.Contains(ModelFailureLog(err), "private-test-value") || strings.Contains(errors.Unwrap(err).Error(), "private-test-value") {
+		t.Fatal("runtime tool output escaped the host failure adapter")
+	}
+	if got := modelExecutionError(text, context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatal("original SDK error was replaced by returned text")
+	}
+}
+
 func TestReadCoverageIsBounded(t *testing.T) {
 	reads := &readProgress{}
 	for i := 0; i < 100; i++ {

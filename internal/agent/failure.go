@@ -11,6 +11,18 @@ import (
 
 var foregroundTaskID = regexp.MustCompile(`\btq-[0-9]+\b`)
 
+var errRepeatedToolLoop = errors.New("repeated tool calls produced no new evidence")
+
+// The pinned SDK's ordinary loop returns nil error when its repeat guard stops
+// execution. Convert that fixed runtime response to failure before publishing.
+// Never retain its appended tool output, which may contain repository secrets.
+func modelExecutionError(text string, err error) error {
+	if err == nil && strings.HasPrefix(strings.TrimSpace(text), "Detected repeated tool-call loop and stopped early to avoid timeout.\nLatest tool outputs:\n") {
+		return errRepeatedToolLoop
+	}
+	return err
+}
+
 // ReviewFailure 保留安全的中断原因和读取回执，原始 SDK 错误不进入公开评论。
 type ReviewFailure struct {
 	Reason   string
@@ -41,7 +53,8 @@ func ModelFailureLog(err error) string {
 func (f *ReviewFailure) Error() string { return f.Reason }
 func (f *ReviewFailure) Unwrap() error { return f.cause }
 
-func reviewResult(sessionID, _ string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
+func reviewResult(sessionID, text string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
+	err = modelExecutionError(text, err)
 	result := ReviewResult{SessionID: sessionID}
 	if notes.Len() > 0 {
 		result.Text = notes.Render()
@@ -56,6 +69,8 @@ func reviewResult(sessionID, _ string, notes *review.Notes, progress *readProgre
 	reason := "模型执行失败，审查未完成。"
 	if strings.Contains(err.Error(), "repeated tool calls produced no new evidence") {
 		reason = "重复读取未产生新证据，运行时已中断审查。"
+	} else if strings.HasPrefix(err.Error(), "max iterations (") {
+		reason = "模型执行达到迭代上限，审查未完成。"
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		reason = "模型调用超时，审查未完成。"
 	} else if errors.Is(err, context.Canceled) {

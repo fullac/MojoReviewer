@@ -11,6 +11,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
+	lhagent "github.com/yurika0211/lucky-agent/agent"
 	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
@@ -143,8 +144,29 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
+	text, err := r.runModel(ctx, sessionID, prompt(input))
 	return reviewResult(sessionID, text, notes, reads, err)
+}
+
+// runModel uses LH's public loop API because ChatSession falls back to plain
+// chat after loop errors, hiding iteration exhaustion from the publishing host.
+func (r *Runner) runModel(ctx context.Context, sessionID, message string) (string, error) {
+	inner := r.agent.Underlying()
+	sess, ok := inner.Sessions().Get(sessionID)
+	if !ok || sess == nil {
+		return "", fmt.Errorf("模型会话不存在")
+	}
+	cfg := lhagent.DefaultLoopConfig()
+	lhagent.ApplyAgentLoopConfig(&cfg, inner.Config().Get().Agent)
+	cfg.Foreground = false
+	result, err := inner.RunLoopWithSession(ctx, sess, message, cfg)
+	if result == nil {
+		if err == nil {
+			err = fmt.Errorf("模型执行未返回结果")
+		}
+		return "", err
+	}
+	return result.Response, modelExecutionError(result.Response, err)
 }
 
 // Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
@@ -189,7 +211,7 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 	if err := lockToolsToFixMode(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.agent.ChatSession(ctx, sessionID, fixPrompt(input))
+	text, err := r.runModel(ctx, sessionID, fixPrompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
