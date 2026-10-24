@@ -232,7 +232,7 @@ func (s *Server) runQueued(ctx context.Context, item github.Review) {
 			})
 		}
 	}()
-	s.runOneWithRunner(ctx, item, s.runnerFor(item.SessionKey))
+	s.runOneWithRunner(ctx, item, nil)
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {

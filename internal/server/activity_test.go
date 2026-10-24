@@ -290,6 +290,23 @@ func localHead(t *testing.T, number int, key string) github.Review {
 	return item
 }
 
+func TestLegacySessionIsNotOpenedOnAnotherWorker(t *testing.T) {
+	s, owner, _, _ := testServer(t, "", "")
+	other := &recordingRunner{}
+	s.runners = []reviewRunner{owner, other}
+	if err := s.store.Put("acme/web#7", store.Record{Repo: "acme/web", Number: 7, SessionID: "legacy"}); err != nil {
+		t.Fatal(err)
+	}
+	item := localReviewItem(t)
+	s.runOneWithRunner(context.Background(), item, nil)
+	if len(other.inputs) != 0 {
+		t.Fatal("legacy session ran on the hashed worker")
+	}
+	if len(owner.inputs) != 1 || owner.inputs[0].SessionID != "legacy" {
+		t.Fatalf("owner inputs=%+v", owner.inputs)
+	}
+}
+
 func TestQueueReceiptFailureDoesNotAcceptTask(t *testing.T) {
 	s, _, _, _ := testServer(t, "", "")
 	if err := os.Mkdir(filepath.Join(s.cfg.DataDir, "activity.json"), 0700); err != nil {
