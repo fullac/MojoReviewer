@@ -27,7 +27,7 @@ func TestRenderedReviewCommentCannotTriggerWebhook(t *testing.T) {
 		t.Fatal("发布评论与 webhook 过滤的前缀必须一致")
 	}
 	var notes review.Notes
-	if err := notes.Add("建议", "", 0, "- **现状：** @mojo 检查错误分支。\n\n- **收益：** 避免遗漏。\n\n- **建议调整：** 返回错误。"); err != nil {
+	if err := notes.Add("建议", "", 0, "- **问题描述：** @mojo 检查错误分支。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 返回错误。"); err != nil {
 		t.Fatal(err)
 	}
 	payload, err := json.Marshal(map[string]any{

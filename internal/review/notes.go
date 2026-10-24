@@ -42,7 +42,7 @@ func (n *Notes) AddWithTitle(severity, path string, line int, title, body string
 	if body == "" {
 		return fmt.Errorf("body 为空")
 	}
-	if err := validateNoteBody(severity, body); err != nil {
+	if err := validateNoteBody(body); err != nil {
 		return err
 	}
 	if line < 0 {

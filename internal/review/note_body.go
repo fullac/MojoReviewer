@@ -8,18 +8,15 @@ import (
 )
 
 // NoteBodyRules is shared by the system prompt and review_note tool schema.
-const NoteBodyRules = "正文必须恰好三项 Markdown 无序列表，按顺序且每项非空：严重问题使用「问题」「影响」「建议修复」；建议使用「现状」「收益」「建议调整」。每项严格写成 - **标签：** 内容，项间留空行。禁止增加、重复或改名栏目，禁止补充说明、验证、代码依据、代码位置等独立栏目，以及列表外文字、小标题、嵌套列表或 HTML。续行必须缩进两个空格。必要代码、命令、配置或日志片段只能放在最后的建议修复/建议调整项内，使用带语言标记的围栏代码块，围栏与内容额外缩进两个空格。短标识符使用行内代码，适当加粗、斜体；不重复标题、分组或数量，不单独展示文件位置。"
+const NoteBodyRules = "正文必须恰好三项 Markdown 无序列表，按顺序且每项非空：严重问题和建议统一使用「问题描述」「代码位置」「修复建议」。每项严格写成 - **标签：** 内容，项间留空行。禁止增加、重复或改名栏目，禁止补充说明、验证、代码依据等额外栏目，以及列表外文字、小标题、嵌套列表或 HTML。续行必须缩进两个空格。必要代码、命令、配置或日志片段只能放在最后的修复建议项内，使用带语言标记的围栏代码块，围栏与内容额外缩进两个空格。短标识符使用行内代码，适当加粗、斜体；不重复标题、分组或数量，代码位置项用行内代码标注已读取的相对文件路径和行号，不再额外展示位置段落。"
 
 var noteCodeFence = regexp.MustCompile("^  (`{3,}|~{3,})([A-Za-z][A-Za-z0-9_+.-]*)$")
 var noteExtraStructure = regexp.MustCompile(`^(?:📍|(?:补充说明|验证(?:建议|方法|步骤)?|代码(?:依据|位置))[：:]|#{1,6}(?:\s|$)|[-+*]\s|[0-9]+[.)]\s|[>|]|[-_*]{3,}$)|\*\*[^*\n]+[：:]\*\*|</?[A-Za-z!]|!\[`)
 
-func validateNoteBody(severity, body string) error {
-	labels := []string{"问题", "影响", "建议修复"}
-	if severity == "建议" {
-		labels = []string{"现状", "收益", "建议调整"}
-	}
+func validateNoteBody(body string) error {
+	labels := []string{"问题描述", "代码位置", "修复建议"}
 	invalid := func() error {
-		return fmt.Errorf("body 模板不符：必须依次且仅包含 %s 三项非空列表，项间空行；续行缩进两个空格，带语言的代码块仅放最后一项。禁止额外栏目、标题、位置或列表外文字", strings.Join(labels, "、"))
+		return fmt.Errorf("body 模板不符：必须依次且仅包含 %s 三项非空列表，项间空行；续行缩进两个空格，带语言的代码块仅放最后一项。禁止额外栏目、标题、独立位置段落或列表外文字", strings.Join(labels, "、"))
 	}
 	lines := strings.Split(body, "\n")
 	section := -1

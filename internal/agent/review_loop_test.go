@@ -80,7 +80,7 @@ func TestManagedReviewLoop(t *testing.T) {
 				}
 				name, args := "read_repo_file", `{"path":"a.go","start_line":1,"end_line":1}`
 				if call == 1 || (tc.name == "invalid_note_then_correct" && call == 2) {
-					name, args = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"- **现状：** fixture finding\n\n- **收益：** 避免遗漏。\n\n- **建议调整：** 检查错误。"}`
+					name, args = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"- **问题描述：** fixture finding\n\n- **代码位置：** \u0060a.go:1\u0060\n\n- **修复建议：** 检查错误。"}`
 					if tc.name == "invalid_note_then_correct" && call == 1 {
 						args = strings.Replace(args, `检查错误。`, `检查错误。\n\n- **补充说明：** 不得发布。`, 1)
 					}

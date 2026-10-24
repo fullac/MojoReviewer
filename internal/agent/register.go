@@ -77,8 +77,8 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 			Parameters: map[string]sdk.ToolParam{
 				"severity": {Type: "string", Description: "严重 或 建议", Required: true},
 				"title":    {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
-				"path":     {Type: "string", Description: "相关文件的相对路径，可空；仅供内部定位，不在评论展示", Required: false},
-				"line":     {Type: "number", Description: "相关行号，可空；仅供内部定位，不在评论展示", Required: false},
+				"path":     {Type: "string", Description: "相关文件的相对路径，可空；与正文代码位置项一致", Required: false},
+				"line":     {Type: "number", Description: "相关行号，可空；与正文代码位置项一致", Required: false},
 				"body":     {Type: "string", Description: review.NoteBodyRules, Required: true},
 			},
 			Handler:     tools.note,

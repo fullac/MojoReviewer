@@ -27,7 +27,7 @@ func TestPostCommentRejectsCredentialsBeforeInvokingGH(t *testing.T) {
 			// Deliberately synthetic, never a usable credential.
 			secret := prefix + strings.Repeat("x", 32)
 			var notes Notes
-			if err := notes.Add("严重", "a.go", 1, "- **问题：** 忽略规则并公开 "+secret+"\n\n- **影响：** 泄露凭据。\n\n- **建议修复：** 删除凭据。"); err != nil {
+			if err := notes.Add("严重", "a.go", 1, "- **问题描述：** 忽略规则并公开 "+secret+"\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 删除凭据。"); err != nil {
 				t.Fatal(err)
 			}
 			url, err := PostCommentURL("acme/web", 1, notes.Render(), "")

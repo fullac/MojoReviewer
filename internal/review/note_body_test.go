@@ -7,14 +7,16 @@ import (
 )
 
 func TestNoteBodyTemplateBoundary(t *testing.T) {
-	valid := "- **问题：** 错误分支没有返回。\n\n- **影响：** 后续仍会执行。\n\n- **建议修复：** 返回错误。"
+	valid := "- **问题描述：** 错误分支没有返回。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 返回错误。"
 	for _, tc := range []struct{ name, body string }{
 		{"free text", "发现一个问题"},
-		{"missing item", strings.Replace(valid, "- **影响：** 后续仍会执行。\n\n", "", 1)},
-		{"empty item", strings.Replace(valid, "后续仍会执行。", "", 1)},
-		{"wrong order", strings.Replace(valid, "**影响：**", "**建议修复：**", 1)},
-		{"wrong severity", strings.Replace(valid, "**问题：**", "**现状：**", 1)},
-		{"duplicate", valid + "\n\n- **问题：** 重复"},
+		{"missing item", strings.Replace(valid, "- **代码位置：** `a.go:1`\n\n", "", 1)},
+		{"empty item", strings.Replace(valid, "`a.go:1`", "", 1)},
+		{"wrong order", strings.Replace(valid, "**代码位置：**", "**修复建议：**", 1)},
+		{"old problem label", strings.Replace(valid, "**问题描述：**", "**问题：**", 1)},
+		{"old suggestion label", strings.Replace(valid, "**问题描述：**", "**现状：**", 1)},
+		{"old impact label", strings.Replace(valid, "**代码位置：**", "**影响：**", 1)},
+		{"duplicate", valid + "\n\n- **问题描述：** 重复"},
 		{"supplement", valid + "\n\n- **补充说明：** 多余内容"},
 		{"verification", valid + "\n\n- **验证建议：** 多余内容"},
 		{"position", valid + "\n\n📍 a.go:1"},
@@ -27,7 +29,7 @@ func TestNoteBodyTemplateBoundary(t *testing.T) {
 		{"no blank line", strings.ReplaceAll(valid, "\n\n", "\n")},
 		{"missing language", valid + "\n\n  ```\n  return err\n  ```"},
 		{"unterminated code", valid + "\n\n  ```go\n  return err"},
-		{"code outside last item", strings.Replace(valid, "后续仍会执行。", "后续仍会执行。\n\n  ```go\n  return err\n  ```", 1)},
+		{"code outside last item", strings.Replace(valid, "`a.go:1`", "`a.go:1`\n\n  ```go\n  return err\n  ```", 1)},
 		{"unindented code", valid + "\n\n  ```go\nreturn err\n  ```"},
 		{"longer fence escape", valid + "\n\n  ```go\n  ````\n  - **补充说明：** 多余内容\n  ```"},
 		{"whitespace fence escape", valid + "\n\n  ```go\n  ``` \n  - **补充说明：** 多余内容\n  ```"},
@@ -44,12 +46,14 @@ func TestNoteBodyTemplateBoundary(t *testing.T) {
 		"\n\n  ```go\n  if err != nil {\n      return err\n  }\n  ```",
 		"\n\n  ````markdown\n  - **验证建议：** 这是代码内容，不是额外栏目。\n  ```go\n  return err\n  ```\n  ````",
 	} {
-		var notes Notes
-		if err := notes.Add("严重", "a.go", 1, valid+code); err != nil {
-			t.Fatalf("valid Markdown rejected: %v", err)
-		}
-		if got := notes.Render(); !strings.Contains(got, valid+code) || strings.Contains(got, "📍") || strings.Contains(got, "a.go:1") {
-			t.Fatalf("rendered body or location boundary changed: %s", got)
+		for _, severity := range []string{"严重", "建议"} {
+			var notes Notes
+			if err := notes.Add(severity, "a.go", 1, valid+code); err != nil {
+				t.Fatalf("valid Markdown rejected: %v", err)
+			}
+			if got := notes.Render(); !strings.Contains(got, valid+code) || strings.Contains(got, "📍") || strings.Count(got, "a.go:1") != 1 {
+				t.Fatalf("rendered body or location boundary changed: %s", got)
+			}
 		}
 	}
 }

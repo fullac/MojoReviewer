@@ -38,7 +38,7 @@ func TestModelInterruptionPublishesFailureReceipt(t *testing.T) {
 			url := "https://ghe.example.com/acme/web/pull/7#issuecomment-1"
 			t.Setenv("MOJO_TEST_COMMENT_URL", url)
 			var notes review.Notes
-			if err := notes.Add("严重", "a.go", 7, "- **问题：** 缺少错误检查。\n\n- **影响：** 错误被忽略。\n\n- **建议修复：** 返回错误。"); err != nil {
+			if err := notes.Add("严重", "a.go", 7, "- **问题描述：** 缺少错误检查。\n\n- **代码位置：** `a.go:7`\n\n- **修复建议：** 返回错误。"); err != nil {
 				t.Fatal(err)
 			}
 			runner.reviewResult = &agent.ReviewResult{SessionID: "existing-session", Text: "不应使用的自由文本 private-test-value"}
@@ -63,7 +63,7 @@ func TestModelInterruptionPublishesFailureReceipt(t *testing.T) {
 			if strings.Contains(string(body), "private-test-value") || strings.Contains(string(body), "审查完成") {
 				t.Fatalf("把失败当成成功，或泄露自由文本: %s", body)
 			}
-			if withNotes && !strings.Contains(string(body), "- **问题：** 缺少错误检查。\n\n- **影响：** 错误被忽略。\n\n- **建议修复：** 返回错误。") {
+			if withNotes && !strings.Contains(string(body), "- **问题描述：** 缺少错误检查。\n\n- **代码位置：** `a.go:7`\n\n- **修复建议：** 返回错误。") {
 				t.Fatal("中断前的意见没有发布")
 			}
 			if !withNotes && !strings.Contains(string(body), "这不表示没有问题") {
