@@ -103,7 +103,7 @@ func TestReviewToolsOnCheckout(t *testing.T) {
 
 func TestNotesRender(t *testing.T) {
 	var notes Notes
-	if err := notes.Add("严重", "calc.go", 4, "减法没有处理下溢"); err != nil {
+	if err := notes.Add("严重", "calc.go", 4, "- **问题描述：** 减法没有处理下溢。\n\n- **代码位置：** `calc.go:4`\n\n- **修复建议：** 检查边界。"); err != nil {
 		t.Fatal(err)
 	}
 	if err := notes.Add("无所谓", "a.go", 1, "不该接受"); err == nil {
@@ -127,8 +127,8 @@ func write(t *testing.T, path, content string) {
 
 func TestNotesRenderMarkdown(t *testing.T) {
 	var notes Notes
-	body := "- **问题：** 满足重试条件时仍接受任务。\n\n- **影响：** 重启后可能丢失任务。\n\n- **建议修复：** 返回保存错误。\n\n  *建议修改示例：*\n\n  ```go\n  if err != nil {\n  \treturn err\n  }\n  ```"
-	if err := notes.AddWithTitle("建议", "test.go", 0, "补充重复投递测试", "- **建议调整：** 覆盖重复请求。"); err != nil {
+	body := "- **问题描述：** 满足重试条件时仍接受任务。\n\n- **代码位置：** `server.go:123`\n\n- **修复建议：** 返回保存错误。\n\n  *建议修改示例：*\n\n  ```go\n  if err != nil {\n  \treturn err\n  }\n  ```"
+	if err := notes.AddWithTitle("建议", "test.go", 0, "补充重复投递测试", "- **问题描述：** 缺少重复请求测试。\n\n- **代码位置：** `test.go`\n\n- **修复建议：** 覆盖重复请求。"); err != nil {
 		t.Fatal(err)
 	}
 	if err := notes.AddWithTitle("严重", "server.go", 123, "保存失败仍接受任务", body); err != nil {
@@ -138,7 +138,7 @@ func TestNotesRenderMarkdown(t *testing.T) {
 	for _, want := range []string{
 		BotPrefix + "\n\n本轮记录 **1 个严重问题、1 条建议**。",
 		"### 🔴 严重问题\n\n**1. 保存失败仍接受任务**",
-		"📍 ` server.go:123 `\n\n" + body,
+		"**1. 保存失败仍接受任务**\n\n" + body,
 		"### 🟡 建议\n\n**2. 补充重复投递测试**",
 	} {
 		if !strings.Contains(got, want) {
@@ -156,11 +156,11 @@ func TestNotesRenderEmptyAndOptionalFields(t *testing.T) {
 		t.Fatalf("empty result must not claim a complete review: %s", got)
 	}
 	var notes Notes
-	if err := notes.Add("建议", "", 0, "保留旧调用的正文"); err != nil {
+	if err := notes.Add("建议", "", 0, "- **问题描述：** 保留旧调用的正文。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 使用固定三项。"); err != nil {
 		t.Fatal(err)
 	}
 	got := notes.Render()
-	if strings.Contains(got, "🔴") || strings.Contains(got, "📍") || !strings.Contains(got, "**1. 审查意见**\n\n保留旧调用的正文") {
+	if strings.Contains(got, "🔴") || strings.Contains(got, "📍") || !strings.Contains(got, "**1. 审查意见**\n\n- **问题描述：** 保留旧调用的正文") {
 		t.Fatalf("optional fields: %s", got)
 	}
 	if err := notes.AddWithTitle("建议", "", 0, "标题\n换行", "内容"); err == nil || notes.Len() != 1 {
@@ -169,7 +169,7 @@ func TestNotesRenderEmptyAndOptionalFields(t *testing.T) {
 }
 
 func TestNotesRenderEscapesTitleWithoutChangingBody(t *testing.T) {
-	body := "- **建议修复：** 保留 `value`。\n\n  ```go\n  return value\n  ```"
+	body := "- **问题描述：** 当前行为可简化。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 保留 `value`。\n\n  ```go\n  return value\n  ```"
 	for _, tt := range []struct {
 		name, title, escaped string
 	}{

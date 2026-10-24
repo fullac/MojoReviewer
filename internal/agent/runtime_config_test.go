@@ -35,6 +35,9 @@ func TestIsolatedRuntimeKeepsConfiguredModelAndLimits(t *testing.T) {
 	if data["limits"].(map[string]any)["timeout_seconds"] != float64(300) {
 		t.Fatal("request timeout lost")
 	}
+	if data["temperature"] != 0.5 || data["limits"].(map[string]any)["temperature"] != 0.5 {
+		t.Fatal("managed temperature must be 0.5")
+	}
 	active := data["models"].(map[string]any)["active"].(map[string]any)
 	if active["chat"] != "fixture-model" || active["compact"] != "fixture-model" {
 		t.Fatal("compaction switches model")
@@ -49,8 +52,14 @@ func TestSDKLoadsManagedModelContextAndTimeout(t *testing.T) {
 	}
 	defer runner.Close()
 	got := runner.agent.Underlying().Config().Get()
+	if got.Temperature != 0.5 || got.Limits.Temperature != 0.5 {
+		t.Fatal("SDK changed the managed temperature")
+	}
 	if got.Context.MaxContextTokens != 40000 || got.Limits.TimeoutSeconds != 300 || got.Agent.TimeoutSeconds != 300 {
 		t.Fatalf("effective context or timeout differs from config")
+	}
+	if got.Agent.Foreground.Enabled == nil || *got.Agent.Foreground.Enabled || got.Agent.MaxIterations != 30 {
+		t.Fatal("SDK did not load the host-managed ordinary loop")
 	}
 	if got.LlmProvider.Model != "gpt-test" || got.LlmProvider.Name != "openai" {
 		t.Fatal("SDK replaced configured model")

@@ -11,6 +11,8 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 )
 
+const modelTemperature = 0.5
+
 // The SDK exposes no request timeout option. Generate only this application's
 // isolated bootstrap settings, then let sdk.New apply its public overrides.
 // Canonical models fields keep chat and compaction on the configured model.
@@ -29,10 +31,18 @@ func writeRuntimeConfig(cfg config.AgentConfig) error {
 	}
 	endpoint := map[string]any{"provider": cfg.Provider, "api_key": cfg.APIKey, "api_base": cfg.APIBase}
 	raw, err := json.Marshal(map[string]any{
-		"models":  map[string]any{"active": map[string]string{"chat": cfg.Model, "compact": cfg.Model}, "endpoints": map[string]any{"chat": endpoint, "compact": endpoint}},
-		"context": map[string]int{"max_context_tokens": tokens},
-		"agent":   map[string]any{"timeout_seconds": seconds, "simple_local_inspection": map[string]int{"timeout_seconds": seconds}},
-		"limits":  map[string]int{"timeout_seconds": seconds},
+		"temperature": modelTemperature,
+		"models":      map[string]any{"active": map[string]string{"chat": cfg.Model, "compact": cfg.Model}, "endpoints": map[string]any{"chat": endpoint, "compact": endpoint}},
+		"context":     map[string]int{"max_context_tokens": tokens},
+		// Mojo owns task deadlines and publication. The SDK's foreground completion
+		// verifier receives no acceptance criteria for these embedded chat turns.
+		"agent": map[string]any{
+			"foreground":              map[string]bool{"enabled": false},
+			"max_iterations":          30,
+			"timeout_seconds":         seconds,
+			"simple_local_inspection": map[string]int{"timeout_seconds": seconds},
+		},
+		"limits": map[string]any{"timeout_seconds": seconds, "temperature": modelTemperature},
 	})
 	if err != nil {
 		return err

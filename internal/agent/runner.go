@@ -11,6 +11,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
+	lhagent "github.com/yurika0211/lucky-agent/agent"
 	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
@@ -37,6 +38,7 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 		APIBase:      cfg.APIBase,
 		SystemPrompt: systemPrompt,
 		AutoApprove:  &auto,
+		Temperature:  modelTemperature,
 		// Bootstrap still registers LuckyAgent builtins. We switch to an allow-list
 		// of review tools after registerReviewTools runs (see lockToolsToReviewOnly).
 		DisableTools: bootstrapDisableTools,
@@ -143,8 +145,29 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.agent.ChatSession(ctx, sessionID, prompt(input))
+	text, err := r.runModel(ctx, sessionID, prompt(input))
 	return reviewResult(sessionID, text, notes, reads, err)
+}
+
+// runModel uses LH's public loop API because ChatSession falls back to plain
+// chat after loop errors, hiding iteration exhaustion from the publishing host.
+func (r *Runner) runModel(ctx context.Context, sessionID, message string) (string, error) {
+	inner := r.agent.Underlying()
+	sess, ok := inner.Sessions().Get(sessionID)
+	if !ok || sess == nil {
+		return "", fmt.Errorf("模型会话不存在")
+	}
+	cfg := lhagent.DefaultLoopConfig()
+	lhagent.ApplyAgentLoopConfig(&cfg, inner.Config().Get().Agent)
+	cfg.Foreground = false
+	result, err := inner.RunLoopWithSession(ctx, sess, message, cfg)
+	if result == nil {
+		if err == nil {
+			err = fmt.Errorf("模型执行未返回结果")
+		}
+		return "", err
+	}
+	return result.Response, modelExecutionError(result.Response, err)
 }
 
 // Fix 在检出内做一轮可写修复。需要 agent.fix_enabled。
@@ -189,7 +212,7 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 	if err := lockToolsToFixMode(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.agent.ChatSession(ctx, sessionID, fixPrompt(input))
+	text, err := r.runModel(ctx, sessionID, fixPrompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
@@ -366,14 +389,11 @@ const systemPrompt = `# SOUL
 
 使用中文。
 评论表达规则：
-- review_note 的 title 用单行短句直接说明问题；每条意见的 body 必须使用 Markdown 无序列表，各项严格写成「- **标签：** 内容」，不要使用独立的标签段落或小标题。
-- 严重问题按「问题」「影响」「代码依据」「建议修复」「验证建议」「补充说明」组织；建议按「现状」「收益」「建议调整」「验证建议」「补充说明」组织。解释触发条件、实际影响及具体修复方向；可选项没有内容就省略，不凑空项。「后果」统一写成「影响」。
-- 列表项之间留空行；同一项内的续行、代码围栏及代码内容均在原有缩进外再缩进两个空格，使其归属于该列表项。修改示例放在「建议修复」或「建议调整」项内，并注明是建议；斜体补充说明也必须留在所属列表项内。
-- 适当使用 Markdown 加粗突出关键结论与「建议修复」「建议调整」，使用斜体标记必要的补充说明或适用条件；不要整段加粗、堆叠强调或为使用格式而凑文字。
-- 代码片段、命令、配置示例、日志或报错原文必须放进围栏代码块，并标注正确语言，如 go、python、bash、json；无法确定语言时用 text。即使只有一行也必须使用代码块，不能混在普通段落中。正文内的文件路径、函数名、变量名等短标识符使用行内代码。
-- 只引用已经读取的代码；提出的修改示例须明确标为建议，不得伪装成现有代码。保留代码块中的换行和缩进。
-- 建议须有具体收益或风险依据，不写泛泛的优化建议；读取记录不能证明验证通过，不得宣称未实际执行的测试通过或所有改动均已核实。
-- 评论前缀、摘要、🔴/🟡 分组、编号、加粗标题和 📍 位置由宿主生成，review_note 正文不要重复这些结构。
+- review_note 的 title 用单行短句直接说明问题，不添加编号或 Markdown 标记。
+` + review.NoteBodyRules + `
+- 解释触发条件、实际影响和具体修复方向。只引用已经读取的代码，修改示例明确标为建议，不得伪装成现有代码。
+- 建议须有具体收益或风险依据，不写泛泛的优化建议；不得宣称未实际执行的测试通过或所有改动均已核实。
+- 评论前缀、摘要、🔴/🟡 分组、编号和加粗标题由宿主生成，正文不要重复。代码位置只在正文对应列表项中展示，path/line 与其一致。
 默认审查：只阅读代码和 diff，不修改仓库，不推送，不创建或合并 PR。
 优先使用 pr_diff_stat、pr_file_diff、read_repo_file、repo_grep、changed_symbols、tests_around、review_note。
 fix 会话额外可用 file_read、file_list、file_write、file_patch、file_mkdir；仍然不要用 terminal，不要网络；commit/push 由宿主完成。

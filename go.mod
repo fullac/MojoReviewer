@@ -2,7 +2,10 @@ module github.com/mojoreviewer/mojoreviewer
 
 go 1.25.0
 
-require github.com/yurika0211/luckyagent-app v0.0.0-20261023123441-69866b490ce5
+require (
+	github.com/yurika0211/lucky-agent/agent v0.0.0-20261023121703-c4f54e2bea18
+	github.com/yurika0211/luckyagent-app v0.0.0-20261023123441-69866b490ce5
+)
 
 require (
 	github.com/bytedance/gopkg v0.1.3 // indirect
@@ -42,7 +45,6 @@ require (
 	github.com/ugorji/go/codec v1.3.1 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	github.com/yurika0211/aestus v0.0.0-20261017093339-9361afb4f42d // indirect
-	github.com/yurika0211/lucky-agent/agent v0.0.0-20261023121703-c4f54e2bea18 // indirect
 	github.com/yurika0211/luckyagent-gateway v0.2.2 // indirect
 	github.com/yurika0211/luckyagent-orchestrator v0.1.1-0.20261019181659-18ef78990cea // indirect
 	github.com/yurika0211/luckyagent-plugins v0.1.0 // indirect
