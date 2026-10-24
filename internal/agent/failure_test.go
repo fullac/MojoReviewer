@@ -14,7 +14,7 @@ func TestInterruptedReviewKeepsNotesAndCoverage(t *testing.T) {
 	reads := &readProgress{}
 	_, _ = reads.read(readKey{kind: "pr_file_diff", path: "a.go"}, func() (string, error) { return "patch", nil })
 	var notes review.Notes
-	if err := notes.Add("严重", "a.go", 7, "错误分支缺少返回"); err != nil {
+	if err := notes.Add("严重", "a.go", 7, "- **问题：** 错误分支缺少返回。\n\n- **影响：** 错误被忽略。\n\n- **建议修复：** 返回错误。"); err != nil {
 		t.Fatal(err)
 	}
 	cause := fmt.Errorf("前台任务未完成，已保留恢复记录。tq-7 [blocked] private-test-value\n原因: repeated tool calls produced no new evidence")
@@ -23,7 +23,7 @@ func TestInterruptedReviewKeepsNotesAndCoverage(t *testing.T) {
 	if !errors.As(err, &failure) || failure.TaskID != "tq-7" || !errors.Is(err, cause) {
 		t.Fatalf("未保留可识别的中断信息: %v", err)
 	}
-	if !result.Noted || result.SessionID != "session-1" || !strings.Contains(result.Text, "错误分支缺少返回") || strings.Contains(result.Text, "自由文本") {
+	if !result.Noted || result.SessionID != "session-1" || !strings.Contains(result.Text, "- **问题：** 错误分支缺少返回。\n\n- **影响：** 错误被忽略。\n\n- **建议修复：** 返回错误。") || strings.Contains(result.Text, "自由文本") {
 		t.Fatalf("丢弃了中断前的笔记: %+v", result)
 	}
 	if !strings.Contains(failure.Reason, "重复读取") || !strings.Contains(failure.Coverage, `"a.go"`) || strings.Contains(err.Error(), "private-test-value") {

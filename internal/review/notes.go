@@ -42,6 +42,9 @@ func (n *Notes) AddWithTitle(severity, path string, line int, title, body string
 	if body == "" {
 		return fmt.Errorf("body 为空")
 	}
+	if err := validateNoteBody(severity, body); err != nil {
+		return err
+	}
 	if line < 0 {
 		return fmt.Errorf("line 无效")
 	}
@@ -120,18 +123,6 @@ func formatNote(item Note, number int) string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "**%d. %s**", number, escapeNoteTitle(title))
-	where := strings.TrimSpace(item.Path)
-	if where != "" {
-		if item.Line > 0 {
-			where = fmt.Sprintf("%s:%d", where, item.Line)
-		}
-		// 选择足够长的反引号，避免路径中的反引号破坏行内代码格式。
-		fence := "`"
-		for strings.Contains(where, fence) {
-			fence += "`"
-		}
-		fmt.Fprintf(&b, "\n\n📍 %s %s %s", fence, where, fence)
-	}
 	b.WriteString("\n\n" + item.Body)
 	return b.String()
 }

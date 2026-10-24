@@ -271,9 +271,12 @@ func TestPRDataCannotBreakOutOfPromptBoundary(t *testing.T) {
 }
 
 func TestReviewNotePreservesMarkdownAndTitle(t *testing.T) {
+	if !strings.Contains(systemPrompt, review.NoteBodyRules) {
+		t.Fatal("system prompt must use the shared note template contract")
+	}
 	notes := &review.Notes{}
 	tools := reviewTools{notes: notes}
-	body := "- **问题：** 错误分支没有返回。\n\n- **建议修复：** 返回错误。\n\n  ```go\n  return err\n  ```\n\n  *仅修改错误分支。*"
+	body := "- **问题：** 错误分支没有返回。\n\n- **影响：** 错误被忽略。\n\n- **建议修复：** 返回错误。\n\n  ```go\n  return err\n  ```\n\n  *仅修改错误分支。*"
 	_, err := tools.note(map[string]any{
 		"severity": "严重", "title": "错误未返回", "path": "a.go", "line": float64(7), "body": body,
 	})

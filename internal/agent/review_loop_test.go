@@ -28,6 +28,7 @@ func TestManagedReviewLoop(t *testing.T) {
 		fix    bool
 	}{
 		{name: "notes_then_finish", calls: 2, noted: true},
+		{name: "invalid_note_then_correct", calls: 3, noted: true},
 		{name: "zero_notes", calls: 1},
 		{name: "repeated_reads", calls: 6, reason: "重复读取", noted: true},
 		{name: "iteration_limit", calls: 30, reason: "迭代上限", noted: true},
@@ -37,16 +38,21 @@ func TestManagedReviewLoop(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests, verifications atomic.Int32
 			var sawReadReceipt atomic.Bool
+			var sawTemplateRejection, wrongTemperature atomic.Bool
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
-					Stream   bool `json:"stream"`
-					Messages []struct {
+					Temperature float64 `json:"temperature"`
+					Stream      bool    `json:"stream"`
+					Messages    []struct {
 						Content string `json:"content"`
 					} `json:"messages"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					http.Error(w, "bad request", 400)
 					return
+				}
+				if req.Temperature != 0.5 {
+					wrongTemperature.Store(true)
 				}
 				if len(req.Messages) > 0 && strings.HasPrefix(req.Messages[0].Content, "Review whether") {
 					verifications.Add(1)
@@ -56,6 +62,9 @@ func TestManagedReviewLoop(t *testing.T) {
 					return
 				}
 				for _, m := range req.Messages {
+					if strings.Contains(m.Content, "body 模板不符") {
+						sawTemplateRejection.Store(true)
+					}
 					if strings.Contains(m.Content, "本轮已读，未再次读取") {
 						sawReadReceipt.Store(true)
 					}
@@ -65,13 +74,16 @@ func TestManagedReviewLoop(t *testing.T) {
 					<-r.Context().Done()
 					return
 				}
-				if tc.name == "zero_notes" || (tc.name == "notes_then_finish" && call > 1) {
+				if tc.name == "zero_notes" || (tc.name == "notes_then_finish" && call > 1) || (tc.name == "invalid_note_then_correct" && call > 2) {
 					writeLoopResponse(w, req.Stream, "模型自由文本不应进入评论", nil)
 					return
 				}
 				name, args := "read_repo_file", `{"path":"a.go","start_line":1,"end_line":1}`
-				if call == 1 {
-					name, args = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"- **问题：** fixture finding"}`
+				if call == 1 || (tc.name == "invalid_note_then_correct" && call == 2) {
+					name, args = "review_note", `{"severity":"建议","path":"a.go","line":1,"body":"- **现状：** fixture finding\n\n- **收益：** 避免遗漏。\n\n- **建议调整：** 检查错误。"}`
+					if tc.name == "invalid_note_then_correct" && call == 1 {
+						args = strings.Replace(args, `检查错误。`, `检查错误。\n\n- **补充说明：** 不得发布。`, 1)
+					}
 				} else if tc.name == "iteration_limit" {
 					args = fmt.Sprintf(`{"path":"a.go","start_line":%d,"end_line":%d}`, call, call)
 				}
@@ -131,6 +143,12 @@ func TestManagedReviewLoop(t *testing.T) {
 			}
 			if requests.Load() != tc.calls || verifications.Load() != 0 {
 				t.Fatalf("unexpected calls=%d verifications=%d", requests.Load(), verifications.Load())
+			}
+			if wrongTemperature.Load() {
+				t.Fatal("provider request temperature must be 0.5")
+			}
+			if tc.name == "invalid_note_then_correct" && (!sawTemplateRejection.Load() || strings.Contains(result.Text, "补充说明") || !strings.Contains(result.Text, "1 条建议")) {
+				t.Fatal("invalid note was not rejected and corrected before publication")
 			}
 			if tasks, _ := filepath.Glob(filepath.Join(home, "runtime", "foreground", "*.json")); len(tasks) > 0 {
 				t.Fatalf("foreground task created: %d", len(tasks))
