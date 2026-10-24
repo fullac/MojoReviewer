@@ -124,6 +124,19 @@ func TestModelFailureLogKeepsClassifiedReasonOnly(t *testing.T) {
 	}
 }
 
+func TestEmptyReplyFailureCommentNamesModelSilence(t *testing.T) {
+	body := reviewFailureComment(agent.ReviewResult{}, &agent.ReviewFailure{
+		Reason: "模型空回复后被运行时挡住，审查未完成。这不是工具重复读取。",
+		TaskID: "tq-2",
+	})
+	if !strings.Contains(body, "模型空回复") || strings.Contains(body, "模型执行失败") {
+		t.Fatalf("空回复说明分类不对: %s", body)
+	}
+	if !strings.Contains(body, "继续前台任务 tq-2") {
+		t.Fatalf("缺少恢复指令: %s", body)
+	}
+}
+
 func TestGenericModelErrorIsNotPublishedRaw(t *testing.T) {
 	body := reviewFailureComment(agent.ReviewResult{Text: "private-model-output"}, errors.New("raw prompt private-test-value"))
 	if !strings.Contains(body, "模型执行失败") || strings.Contains(body, "private-") {
