@@ -97,7 +97,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 `pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
 
-只读审查每轮共用一份读取回执：同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
+只读审查每轮只留一份汇总回执，但内容去重按分工算：同一分工内同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；不同分工各自读得到内容（否则另一路只拿到「已读」提示、看不到内容，会反复重试到超时）。新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
 
 `go vet` 在检出内按包目录跑（`go vet ./internal/...` 的粒度），不把改动文件拍平进临时 module：拍平会让多包 PR 报 `found packages`、让只复制改动文件的包报 `undefined`，把假报错写进评论。运行时关掉模块下载（`GOPROXY=off`）并锁定 `-mod=readonly`，不修改被审仓库的 `go.mod`/`go.sum`，也不跟随检出外链接。因缺依赖、缺工具链或超时而跑不动时，结果标成「宿主静态检查未完成」，不能当作代码缺陷证据；只有真正的 vet 发现才进 findings。
 
@@ -147,6 +147,7 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ## 改动时不要做的事
 
 - 不同 PR 的 worker 使用各自的检出和 LuckyAgent runtime。同一个 PR 的只读分工共享检出但使用独立 runtime；`fix` 不和只读分工同时改这份检出。一次审查的地图、记忆、行为、测试和静态分工写入 task 事件，宿主静态检查结果与带来源笔记一起汇总。
+- 回执汇总可以共享，但内容去重不能跨分工：另一路拿到「本轮已读」提示却从没见过内容，只会反复重试到超时（实测一次审查烧掉 100+ 次模型调用）。
 - 不要让每次审查新建分工 runtime 再丢掉：那会按审查次数泄漏 runtime 和会话库句柄，而且同一个 HomeDir 会被两个存活 runtime 同时打开。分工 runtime 按 worker 建一次、按分工序号复用。
 - 同一 worker 的 `finishPR` 必须 `defer`，`worker` 循环要兜住 `recover`。少了任一个，一次 panic 就会让 `prActive` 永远为 true，后续投递堆进 `prWait` 再也不被取走，还持续占着 32 的队列配额。
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。

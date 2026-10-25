@@ -247,9 +247,9 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("记录审查分工: %w", err)
 	}
 	notes := &review.Notes{}
-	// 一次审查只维护一份读取回执，各分工共用：分工各读一份时，地图、行为、测试
-	// 会把同一份 patch 各拉一遍。
-	reads := &readProgress{}
+	// 回执按分工统计、汇总成一份：内容去重留在各分工自己手里，否则另一路会被
+	// 告知「本轮已读」却从没见过那份 patch，只能反复重试。
+	receipt := &readProgress{}
 	roleSessions := maps.Clone(input.RoleSessions)
 	if roleSessions == nil {
 		roleSessions = map[string]string{}
@@ -295,13 +295,14 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 			outcomes <- roleOutcome{id: role.id, err: err}
 			return nil
 		}
+		roleReads := &readProgress{sink: receipt}
 		if err := plan.start(role.id); err != nil {
 			return fail(fmt.Errorf("启动记录: %w", err))
 		}
 		if err := setSessionWorkingDir(runner.agent, roleSession, input.WorkDir); err != nil {
 			return fail(fmt.Errorf("设置工作目录: %w", err))
 		}
-		if err := registerReviewTools(runner.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads, role.id); err != nil {
+		if err := registerReviewTools(runner.agent, review.ToolScope{Dir: input.WorkDir}, notes, roleReads, role.id); err != nil {
 			return fail(fmt.Errorf("注册工具: %w", err))
 		}
 		if err := lockToolsToReviewOnly(runner.agent); err != nil {
@@ -325,7 +326,7 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	} else {
 		_ = plan.finish(taskstore.StatusCompleted)
 	}
-	result, resultErr := reviewResult(sessionID, "", notes, reads, firstErr)
+	result, resultErr := reviewResult(sessionID, "", notes, receipt, firstErr)
 	result.RoleSessions = roleSessions
 	return result, resultErr
 }

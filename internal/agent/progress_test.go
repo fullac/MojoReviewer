@@ -36,6 +36,36 @@ func TestReadProgressDeduplicatesConcurrentRequests(t *testing.T) {
 	}
 }
 
+// 回执汇总共享，但内容去重只能留在一个分工内部：另一路必须真的拿到那份
+// patch，否则它只能反复重试到超时。
+func TestSharedReceiptStillDeliversContentToOtherRoutes(t *testing.T) {
+	receipt := &readProgress{}
+	mapRoute := &readProgress{sink: receipt}
+	behaviorRoute := &readProgress{sink: receipt}
+	key := readKey{kind: "pr_file_diff", path: "internal/server/server.go"}
+
+	first, err := mapRoute.read(key, func() (string, error) { return "patch from map", nil })
+	if err != nil || first != "patch from map" {
+		t.Fatalf("first read=%q err=%v", first, err)
+	}
+	second, err := behaviorRoute.read(key, func() (string, error) { return "patch from behavior", nil })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != "patch from behavior" {
+		t.Fatalf("另一路被错误地告知已读: %q", second)
+	}
+	// 同一分工内重复读才该被拦。
+	again, err := mapRoute.read(key, func() (string, error) { return "never", nil })
+	if err != nil || !strings.Contains(again, "本轮已读") {
+		t.Fatalf("同一分工内应去重: %q err=%v", again, err)
+	}
+	summary := receipt.summary()
+	if !strings.Contains(summary, "patch 1 个文件") || !strings.Contains(summary, "server.go") {
+		t.Fatalf("回执没有汇总两路的读取: %s", summary)
+	}
+}
+
 func TestReadProgressDoesNotCacheFailure(t *testing.T) {
 	reads := &readProgress{}
 	key := readKey{kind: "pr_file_diff", path: "a.go"}

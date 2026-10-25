@@ -14,10 +14,38 @@ type readKey struct {
 }
 
 // readProgress 只存一次只读审查的读取回执，不保存代码或跨提交复用结果。
+// 内容去重按分工算（同一会话内重复读同一件才给已读提示），sink 只汇总本轮
+// 所有分工的回执：把内容去重也做成全局，另一路会被告知「已读」却从没见过内容，
+// 于是反复重试到超时。
 type readProgress struct {
 	mu         sync.Mutex
 	seen       map[readKey]bool
 	duplicates int
+	sink       *readProgress
+}
+
+// record 把一次读取记到汇总回执上。
+func (p *readProgress) record(key readKey) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.seen == nil {
+		p.seen = make(map[readKey]bool)
+	}
+	p.seen[key] = true
+}
+
+func (p *readProgress) countDuplicate() {
+	p.mu.Lock()
+	p.duplicates++
+	p.mu.Unlock()
+	if sink := p.sink; sink != nil {
+		sink.mu.Lock()
+		sink.duplicates++
+		sink.mu.Unlock()
+	}
 }
 
 func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, error) {
@@ -25,9 +53,9 @@ func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, 
 		return fetch()
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.seen[key] {
-		p.duplicates++
+		p.mu.Unlock()
+		p.countDuplicate()
 		return fmt.Sprintf("本轮已读，未再次读取：%s %q [%d:%d]。请使用此前结果，读取未读文件/行段，或调用 review_note 记录有证据的问题后结束；证据不足时说明未覆盖范围。", key.kind, key.path, key.start, key.end), nil
 	}
 	out, err := fetch()
@@ -36,6 +64,10 @@ func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, 
 			p.seen = make(map[readKey]bool)
 		}
 		p.seen[key] = true
+	}
+	p.mu.Unlock()
+	if err == nil {
+		p.sink.record(key)
 	}
 	return out, err
 }
