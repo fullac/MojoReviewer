@@ -271,6 +271,22 @@ class ManagerTests(unittest.TestCase):
             self.m.configure_hooks()
         self.assertEqual(self.m.gh.call_count, 1)
 
+    def test_progress_reads_only_sanitized_attempt_file(self):
+        atomic_json(self.root / "data/progress/github:abc.json", [
+            {"at": "2026-10-25T00:00:00Z", "kind": "tool", "summary": "read_repo_file a.go 1-20"},
+            {"kind": "note", "summary": "严重 a.go:12 预算判断失效 " + "x" * 400},
+            {"summary": "missing kind"},
+        ])
+        got = self.m.progress("github:abc")
+        self.assertEqual(got["events"][0]["summary"], "read_repo_file a.go 1-20")
+        self.assertEqual(len(got["events"]), 2)
+        self.assertLessEqual(len(got["events"][1]["summary"]), 240)
+        raw = json.dumps(got)
+        self.assertNotIn("/home/", raw)
+        with self.assertRaises(ValueError):
+            self.m.progress("../activity")
+        self.assertEqual(self.m.progress("missing")["events"], [])
+
     def test_legacy_records_are_not_success_receipts(self):
         atomic_json(self.root / "data/reviews.json", {"acme/web#7": {"session_id": "legacy"}})
         self.assertEqual(self.m.snapshot()["activity"], [])

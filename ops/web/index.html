@@ -179,5 +179,21 @@
 <footer>MojoReviewer <span>本机服务 · 页面每 3 秒更新</span>
 </footer>
 </main>
+<dialog id="progress">
+<div class="progress-head">
+<div>
+<p class="eyebrow">ATTEMPT</p>
+<h2 id="progress-title">审查进度</h2>
+<p id="progress-meta" class="muted"></p>
+</div>
+<span id="progress-state" class="badge"></span>
+</div>
+<div id="progress-error" class="muted" hidden></div>
+<ol id="progress-events"></ol>
+<div class="progress-foot">
+<a id="progress-comment" href="" target="_blank" rel="noopener noreferrer" hidden>查看评论</a>
+<button id="progress-close" type="button">关闭</button>
+</div>
+</dialog>
 </body>
 </html>

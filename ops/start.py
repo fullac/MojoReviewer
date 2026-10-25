@@ -16,6 +16,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -469,6 +470,23 @@ class Manager:
             self.wake.clear()
         self.stop_all()
 
+    def progress(self, activity_id):
+        if not re.fullmatch(r"[A-Za-z0-9:_-]{1,80}", activity_id or "") or ".." in activity_id:
+            raise ValueError("尝试 ID 无效")
+        directory = Path(self.cfg.get("data_dir") or Path.home() / ".mojoreviewer").expanduser()
+        rows = read_json(directory / "progress" / f"{activity_id}.json", [])
+        if not isinstance(rows, list):
+            rows = []
+        events = []
+        for row in rows[-400:]:
+            if not isinstance(row, dict):
+                continue
+            kind, summary = str(row.get("kind") or "")[:40], str(row.get("summary") or "")[:240]
+            if not kind or not summary:
+                continue
+            events.append({"at": str(row.get("at") or "")[:40], "kind": kind, "summary": summary})
+        return {"id": activity_id, "events": events}
+
     def snapshot(self):
         with self.lock:
             _, activity = self.record_data()
@@ -580,6 +598,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(200, manager.snapshot())
             elif self.path == "/api/config":
                 self.respond(200, manager.public_config())
+            elif self.path.startswith("/api/activity/"):
+                activity_id = urllib.parse.unquote(self.path.removeprefix("/api/activity/"))
+                if activity_id.endswith("/progress"):
+                    activity_id = activity_id.removesuffix("/progress")
+                self.respond(200, manager.progress(activity_id))
             elif self.path in ("/", "/app.js", "/style.css"):
                 name, mime = {"/": ("index.html", "text/html; charset=utf-8"),
                               "/app.js": ("app.js", "text/javascript; charset=utf-8"),
