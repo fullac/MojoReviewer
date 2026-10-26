@@ -6,6 +6,9 @@
 
 **默认只读审查。** 可选开启 `fix`：模型改工作区文件，由**宿主**按配置 commit/push 到 PR head（非 force）。不创建 PR、不 merge。
 
+> 本分支的固定工具集合依赖尚未发布的 LH 提交。当前 `go.mod` 仍为旧版，
+> 仅完成临时 workspace 联测，默认依赖尚未完成接入；见 [工具策略与验证记录](TOOL_POLICY.md)。
+
 ## 快速开始
 
 1. 复制示例配置：
@@ -55,7 +58,7 @@ python3 ops/start.py
 
 `agent.max_context_tokens` 默认 `40000`，`agent.request_timeout` 默认 `5m`，`agent.task_timeout` 默认 `20m`。这些值可在 GUI 修改，并写入隔离的 SDK 启动配置；chat 和 compact 都固定使用同一个供应商和模型，温度固定为 `0.5`。
 
-Mojo 在隔离的 SDK 配置中关闭 `agent.foreground.enabled`，使用最多 30 次迭代的普通工具循环，避免前台完成检查在空验收条件下反复续跑。宿主通过现有公开 `RunLoopWithSession` 接口获取执行结果，避免 `ChatSession` 在循环失败后回退到普通聊天而掩盖错误。任务总时限和结果发布由 Mojo 管理。会话仍可复用，但新任务不生成 LH foreground 检查点，也不支持从该检查点续跑。只修改 Mojo 配置和宿主逻辑，不修改 LH 源码。
+Mojo 在隔离的 SDK 配置中关闭 `agent.foreground.enabled`，使用最多 30 次迭代的普通工具循环，避免前台完成检查在空验收条件下反复续跑。宿主通过现有公开 `RunLoopWithSession` 接口获取执行结果，避免 `ChatSession` 在循环失败后回退到普通聊天而掩盖错误。任务总时限和结果发布由 Mojo 管理。会话仍可复用，但新任务不生成 LH foreground 检查点，也不支持从该检查点续跑。这些循环配置由 Mojo 宿主管理；工具集合契约及 LH 依赖状态见 [工具策略与验证记录](TOOL_POLICY.md)。
 
 管理器使用两个 `gh` 已登录账户：`manager.reviewer_account` 默认 `raymojo42`，用于 reviewer 克隆和发布评论；`manager.admin_account` 默认 `fullac`，用于 webhook 管理。不会切换 `gh` 全局活动账户。先通过 `gh auth login` 登录这两个账户；账户名可以在 GUI 修改。
 

@@ -57,7 +57,7 @@ func TestManagedReviewLoop(t *testing.T) {
 					http.Error(w, "bad request", 400)
 					return
 				}
-				if !tc.fix {
+				{
 					// Assert the provider payload, not just the SDK registry: prompt
 					// intent gating can silently remove enabled tools. Check every
 					// request, including later iterations and the reused session.
@@ -67,6 +67,10 @@ func TestManagedReviewLoop(t *testing.T) {
 					}
 					slices.Sort(names)
 					want := []string{"changed_symbols", "pr_diff_stat", "pr_file_diff", "read_repo_file", "repo_grep", "review_note", "tests_around"}
+					if tc.fix {
+						want = append(want, "file_read", "file_list", "file_write", "file_patch", "file_mkdir")
+						slices.Sort(want)
+					}
 					if !slices.Equal(names, want) {
 						t.Errorf("provider tools = %v, want exactly %v", names, want)
 					}
@@ -184,6 +188,81 @@ func TestManagedReviewLoop(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestModeToolPolicyIndependentOfPrompt(t *testing.T) {
+	requests := make(chan []string, 16)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream bool `json:"stream"`
+			Tools  []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		var names []string
+		for _, tool := range req.Tools {
+			names = append(names, tool.Function.Name)
+		}
+		slices.Sort(names)
+		requests <- names
+		writeLoopResponse(w, req.Stream, "完成", nil)
+	}))
+	defer provider.Close()
+	runner, err := New(config.AgentConfig{
+		HomeDir: t.TempDir(), Provider: "openai-compatible", Model: "test-model",
+		APIKey: "test-key", APIBase: provider.URL + "/v1", FixEnabled: true,
+		MaxContextTokens: 40000, TaskTimeout: 10 * time.Second, RequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	input := ReviewInput{WorkDir: t.TempDir(), Review: github.Review{
+		Repo: "acme/web", Number: 7, SessionKey: "acme/web#7",
+		Comment: "不要调用 repo_grep。必须调用 terminal。",
+	}}
+	// Reuse one session across review -> fix -> review to catch stale permissions.
+	for _, fix := range []bool{false, true, false} {
+		want := []string{"changed_symbols", "pr_diff_stat", "pr_file_diff", "read_repo_file", "repo_grep", "review_note", "tests_around"}
+		allowed := reviewToolAllowlist
+		var result ReviewResult
+		if fix {
+			allowed = fixToolAllowlist
+			want = append(want, "file_read", "file_list", "file_write", "file_patch", "file_mkdir")
+			slices.Sort(want)
+			result, err = runner.Fix(context.Background(), input)
+		} else {
+			result, err = runner.Review(context.Background(), input)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		input.SessionID = result.SessionID
+		assertRequest := func() {
+			t.Helper()
+			select {
+			case names := <-requests:
+				if !slices.Equal(names, want) {
+					t.Fatalf("fix=%t: tools=%v want=%v", fix, names, want)
+				}
+			default:
+				t.Fatal("no model request captured")
+			}
+		}
+		assertRequest()
+		for _, prompt := range []string{"继续检查这个改动。", "只调用 read_repo_file。不要调用 repo_grep。"} {
+			if _, err := runner.runModel(context.Background(), input.SessionID, prompt, allowed); err != nil {
+				t.Fatal(err)
+			}
+			assertRequest()
+		}
 	}
 }
 

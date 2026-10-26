@@ -9,7 +9,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 - 模型工具必须落在这次检出里。`refs/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/review/merge-base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组，chat/compact 温度固定为 `0.5`。不要按任务换模型。
-- 本项目始终不修改 LH 源码或引入私有补丁。Mojo 的隔离 SDK 配置关闭 `agent.foreground.enabled`，普通工具循环最多 30 次迭代；任务总超时、审查状态和发布由宿主管理，会话仍可复用，新任务不生成 foreground 检查点。
+- 不在 Mojo 中维护 LH 私有补丁。需要修改 LH 契约时，经用户授权在 LH 独立分支修复，发布后再固定公开依赖；本地联测使用临时 workspace，不提交机器路径 replace。Mojo 的隔离 SDK 配置关闭 `agent.foreground.enabled`，普通工具循环最多 30 次迭代；任务总超时、审查状态和发布由宿主管理，会话仍可复用，新任务不生成 foreground 检查点。
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次，已开始的自动尝试持久化到 `auto_heads`，失败也保留。带完整 @触发用户 的评论或 GUI 显式重审可以再审，并续用已有会话。仅排队未执行的自动任务可在重启后补齐；中断的 GitHub 评论在投递保留期内请求补送，本地 GUI 重审需再次点击。
 - 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；改工作区后由宿主 commit/push 到 head 分支）。
@@ -93,7 +93,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 | `tests_around` | 改动文件附近已有的测试 |
 | `review_note` | 记一条。`severity` 只能是 `严重` 或 `建议` |
 
-审查提示词必须为七个工具分别保留明确的调用措辞（可按需调用），仅列工具名不够：LH 会按提示词意图筛选发给模型的工具。修改提示词或升级 SDK 后，用本地假模型检查实际请求恰好包含这七个工具，覆盖后续轮次与会话复用，不能只检查注册表或白名单。
+工具集合由宿主按模式通过 `LoopConfig.RestrictTools/AllowedTools` 固定：review 为七个工具，fix 额外允许五个文件工具。LH 必须支持显式集合跳过提示词筛选并禁止预算静默裁剪；提示词只指导任务，不决定工具集合。修改提示词或升级 SDK 后，用本地假模型检查实际请求集合，覆盖措辞变化、后续轮次、会话复用和模式切换，不能只检查注册表或白名单。
 
 `pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
 
