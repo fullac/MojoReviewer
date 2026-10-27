@@ -9,10 +9,14 @@ import tempfile
 import time
 import types
 import unittest
+import http.server
+import threading
+import urllib.request
+import urllib.error
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from start import Handler, Manager, atomic_json, tls_context, valid_duration
+from start import Handler, Manager, WEB_ASSETS, atomic_json, tls_context, valid_duration
 
 
 class ManagerTests(unittest.TestCase):
@@ -455,6 +459,31 @@ class ManagerTests(unittest.TestCase):
         self.assertTrue(self.m.hooks_pending)
         self.assertEqual(self.m.phase, "configuring")
         self.m.gh.assert_not_called()
+
+    def test_ui_assets_are_local_explicit_and_keep_security_headers(self):
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        server.manager = self.m
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+        thread.start()
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            for path, (_, mime) in WEB_ASSETS.items():
+                with opener.open(base + path, timeout=2) as response:
+                    self.assertEqual(response.status, 200, path)
+                    self.assertEqual(response.headers["Content-Type"], mime)
+                    self.assertEqual(response.headers["X-Content-Type-Options"], "nosniff")
+                    self.assertIn("script-src 'self'", response.headers["Content-Security-Policy"])
+                    self.assertNotIn("unsafe-inline", response.headers["Content-Security-Policy"])
+                    self.assertTrue(response.read(), path)
+            for path in ("/../start.py", "/%2e%2e/start.py", "/ASSETS.md", "/config.json"):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    opener.open(base + path, timeout=2)
+                self.assertEqual(raised.exception.code, 404)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
 
 
 if __name__ == "__main__":

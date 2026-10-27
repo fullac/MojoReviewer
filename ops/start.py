@@ -23,6 +23,16 @@ import urllib.request
 ROOT = Path(__file__).resolve().parents[1]
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
 SECRET = re.compile(r"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)")
+WEB_ASSETS = {
+    "/": ("index.html", "text/html; charset=utf-8"),
+    **{f"/{name}": (name, "text/javascript; charset=utf-8")
+       for name in ("app.js", "ui.js", "gsap.min.js", "ScrollTrigger.min.js")},
+    "/style.css": ("style.css", "text/css; charset=utf-8"),
+    "/mark.svg": ("mark.svg", "image/svg+xml"),
+    "/satoshi.woff2": ("satoshi.woff2", "font/woff2"),
+    "/landscape.jpg": ("landscape.jpg", "image/jpeg"),
+    "/mountain.jpg": ("mountain.jpg", "image/jpeg"),
+}
 
 
 def atomic_json(path, value):
@@ -661,10 +671,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(200, manager.snapshot())
             elif self.path == "/api/config":
                 self.respond(200, manager.public_config())
-            elif self.path in ("/", "/app.js", "/style.css"):
-                name, mime = {"/": ("index.html", "text/html; charset=utf-8"),
-                              "/app.js": ("app.js", "text/javascript; charset=utf-8"),
-                              "/style.css": ("style.css", "text/css; charset=utf-8")}[self.path]
+            elif self.path in WEB_ASSETS:
+                name, mime = WEB_ASSETS[self.path]
                 self.respond(200, (ROOT / "ops/web" / name).read_bytes(), mime)
             else:
                 self.respond(404, {"error": "不存在"})

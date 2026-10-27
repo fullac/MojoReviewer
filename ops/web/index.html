@@ -1,122 +1,90 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MojoReviewer · 管理台</title>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light"><title>MojoReviewer · 审查工作台</title>
+<link rel="icon" href="/mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
-<script src="/app.js" defer>
-</script>
+<script src="/gsap.min.js" defer></script><script src="/ScrollTrigger.min.js" defer></script>
+<script src="/ui.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
-<aside>
-<a class="brand" href="/">Mojo<span>Reviewer</span>
-</a>
-<p class="eyebrow">LOCAL CONTROL</p>
-<nav>
-<button data-tab="overview" class="selected">服务与审查</button>
-<button data-tab="settings">连接配置</button>
-<button data-tab="logs">运行日志</button>
+<svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
+<symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></symbol>
+<symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h8m4 0h4M4 17h3m4 0h9"/><circle cx="14" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></symbol>
+<symbol id="i-terminal" viewBox="0 0 24 24"><path d="m5 7 5 5-5 5m8 0h6"/></symbol>
+<symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14m-6-6 6 6-6 6"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5m-4-4a8 8 0 0 1 13-3l2 3M4 16l2 3a8 8 0 0 0 13-3"/></symbol>
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/></symbol>
+<symbol id="i-copy" viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M15 8V3H3v13h5"/></symbol>
+<symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+<symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="5" r="2"/><path d="M6 7v10m0-3c7 0 12-2 12-7"/></symbol>
+<symbol id="i-globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18"/></symbol>
+<symbol id="i-stack" viewBox="0 0 24 24"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4"/></symbol>
+<symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+<symbol id="i-external" viewBox="0 0 24 24"><path d="M14 4h6v6m0-6L10 14m0-10H4v16h16v-6"/></symbol>
+</defs></svg>
+<a class="skip-link" href="#main">跳至主要内容</a>
+<header class="topbar">
+<div class="nav-shell">
+<a class="brand" href="#overview" aria-label="MojoReviewer 首页"><img src="/mark.svg" width="32" height="32" alt=""><span>mojo<span class="brand-light">reviewer</span><span class="brand-period">.</span></span></a>
+<nav aria-label="主导航">
+<button data-tab="overview" class="nav-button selected" aria-current="page"><svg><use href="#i-grid"/></svg>工作台</button>
+<button data-tab="settings" class="nav-button"><svg><use href="#i-sliders"/></svg>连接配置</button>
+<button data-tab="logs" class="nav-button"><svg><use href="#i-terminal"/></svg>运行日志</button>
 </nav>
-<div class="aside-footer">
-<span class="dot">
-</span>本机管理入口<br>
-<small>管理器独立运行<br>停止 reviewer 后仍可访问</small>
+<div class="connection-wrap"><span id="connection" class="status neutral">正在连接</span><span class="local-label">本机</span></div>
 </div>
-</aside>
-<main>
-<header>
-<div>
-<p class="eyebrow">REVIEW AGENT / CONTROL ROOM</p>
-<h1 id="heading">服务与审查</h1>
-</div>
-<span id="connection" class="badge">正在连接</span>
 </header>
-<div id="message" role="status" aria-live="polite">
-</div>
-<section id="overview" class="view">
-<div class="service">
-<div>
-<p class="eyebrow">服务状态</p>
-<h2 id="phase">读取中</h2>
-<p id="error" class="muted">
-</p>
-</div>
-<div class="actions">
-<button data-action="start" class="primary">启动服务</button>
-<button data-action="stop">停止服务</button>
-<button data-action="restart">重启</button>
+<main id="main" class="overflow-x-hidden w-full max-w-full">
+<div id="message" class="toast" role="status" aria-live="polite" hidden><span id="message-text"></span><button id="dismiss-message" class="icon-button" aria-label="关闭提示"><svg><use href="#i-close"/></svg></button></div>
+<div id="offline" class="offline" role="alert" hidden>管理器连接已断开。当前显示上次同步的数据，操作暂不可用。<button id="reconnect" class="text-button">重新连接</button></div>
+<section id="overview" class="view" aria-label="工作台">
+<div class="hero">
+<div class="hero-media" aria-hidden="true"><img src="/mountain.jpg" alt=""></div>
+<div class="hero-content">
+<h1 class="max-w-5xl">审查<span class="inline-image" aria-hidden="true"><img src="/landscape.jpg" alt=""></span>工作台</h1>
+<p>从代码变更到评论发布，清晰掌握每一次审查。</p>
+<div class="hero-actions"><button class="button light" data-open-retry>发起审查<svg><use href="#i-plus"/></svg></button><button class="button ghost-light" id="jump-reviews">查看审查记录<svg><use href="#i-arrow"/></svg></button></div>
 </div>
 </div>
-<div class="metrics">
-<article>
-<span>Reviewer</span>
-<strong id="reviewer">—</strong>
-<small>进程内嵌 LuckyAgent</small>
+<section class="health-section" aria-labelledby="health-heading">
+<div class="section-heading"><div class="heading-inline"><h2 id="health-heading">服务概况</h2><span id="phase" class="status neutral">读取中</span></div><div class="service-actions"><button data-action="start" class="button primary" hidden>启动服务</button><button data-action="stop" class="text-button">停止服务</button><button data-action="restart" class="icon-button" aria-label="重启服务" title="重启服务"><svg><use href="#i-refresh"/></svg></button></div></div>
+<p id="error" class="error-banner" role="status" hidden></p>
+<div class="health-grid grid-flow-dense" id="health-grid">
+<article class="health-panel" data-panel="reviewer">
+<button class="panel-summary" aria-expanded="false" aria-controls="reviewer-detail"><span class="panel-label"><svg><use href="#i-branch"/></svg>审查服务<svg class="panel-expand"><use href="#i-plus"/></svg></span><span id="reviewer" class="panel-value">连接中</span><span id="reviewer-summary" class="panel-caption">等待服务状态</span></button>
+<div class="panel-detail" id="reviewer-detail" hidden><span id="reviewer-pid" class="mono"></span><p>保持单任务执行，避免会话与检出目录互相干扰。</p></div>
 </article>
-<article>
-<span>公网入口</span>
-<strong id="tunnel">—</strong>
-<small id="probe">签名探测尚未运行</small>
+<article class="health-panel" data-panel="tunnel">
+<button class="panel-summary" aria-expanded="false" aria-controls="tunnel-detail"><span class="panel-label"><svg><use href="#i-globe"/></svg>公网连接<svg class="panel-expand"><use href="#i-plus"/></svg></span><span id="tunnel" class="panel-value">连接中</span><span id="probe" class="panel-caption">等待入口状态</span></button>
+<div class="panel-detail" id="tunnel-detail" hidden><span id="tunnel-pid" class="mono"></span><p>连续三次公网探测失败后自动重建入口。</p><button data-action="tunnel" class="text-button">重建隧道 <span aria-hidden="true">↗</span></button></div>
 </article>
-<article>
-<span>审查队列</span>
-<strong id="queue">—</strong>
-<small>串行执行 · 最大排队 32</small>
+<article class="health-panel" data-panel="queue">
+<button class="panel-summary" aria-expanded="false" aria-controls="queue-detail"><span class="panel-label"><svg><use href="#i-stack"/></svg>审查队列<svg class="panel-expand"><use href="#i-plus"/></svg></span><span class="queue-value"><span id="queue" class="panel-value">—</span><span class="queue-unit">项等待</span></span><span id="queue-summary" class="panel-caption">等待队列状态</span></button>
+<div class="panel-detail" id="queue-detail" hidden><div id="queue-capacity" class="capacity" aria-hidden="true"></div><p>最多排队 32 项，按顺序逐一审查。</p></div>
 </article>
 </div>
-<div class="tunnel-bar">
-<div>
-<label>WEBHOOK ENDPOINT</label>
-<p id="endpoint">服务启动后生成地址</p>
-</div>
-<button data-action="tunnel">重建隧道</button>
-<button data-action="reconcile">检查漏审</button>
-</div>
-<div class="section-title">
-<div>
-<h2>审查记录</h2>
-<p class="muted">最近 256 次尝试；完成状态在评论发布成功后写入。</p>
-</div>
-<button id="refresh">刷新</button>
-</div>
-<div class="table-wrap">
-<table>
-<thead>
-<tr>
-<th>仓库 / PR</th>
-<th>提交</th>
-<th>状态</th>
-<th>更新时间</th>
-<th>操作</th>
-</tr>
-</thead>
-<tbody id="reviews">
-</tbody>
-</table>
-<div id="empty" class="empty">
-<strong>还没有审查记录</strong>
-<p>配置仓库并启动服务后，PR 会自动进入审查队列。<br>旧版会话记录不会被标记为已完成。</p>
-</div>
-</div>
-<form id="retry-form" class="retry-form">
-<label for="retry-repo">手动重新审查</label>
-<select id="retry-repo" required>
-</select>
-<input id="retry-number" aria-label="PR 编号" type="number" min="1" placeholder="PR 编号" required>
-<button class="primary">加入队列</button>
-<small>复用已有会话，审查当前 head</small>
-</form>
+<div class="endpoint-strip"><div class="endpoint-label"><span class="mini-dot" aria-hidden="true"></span>Webhook</div><code id="endpoint">服务启动后生成入口地址</code><button id="copy-endpoint" class="icon-button" aria-label="复制 webhook 地址" title="复制地址" disabled><svg><use href="#i-copy"/></svg></button></div>
 </section>
-<section id="settings" class="view" hidden>
-<div class="section-title">
-<div>
-<h2>连接配置</h2>
-<p class="muted">停止服务后保存。密钥留空表示保留已有值，界面不会回显密钥。</p>
+<section id="review-section" class="review-section" aria-labelledby="reviews-heading">
+<div class="section-heading"><div><h2 id="reviews-heading">审查记录 <span id="review-count" class="count">0</span></h2><p class="section-description">跟进执行过程，查看已发布的审查结果。</p></div><div class="heading-actions"><button data-action="reconcile" class="button secondary">检查漏审</button><button id="refresh" class="icon-button" aria-label="刷新审查记录" title="刷新"><svg><use href="#i-refresh"/></svg></button></div></div>
+<div class="activity-spotlight" aria-label="最近审查动态" aria-roledescription="轮播"><div class="spotlight-icon"><svg><use href="#i-branch"/></svg></div><div class="spotlight-copy"><span class="small-label">最近动态</span><p id="spotlight-text">等待第一条审查记录</p></div><span id="spotlight-count" class="mono small-label"></span><div class="carousel-controls"><button id="spotlight-prev" class="icon-button" aria-label="上一条动态">←</button><button id="spotlight-next" class="icon-button" aria-label="下一条动态">→</button></div></div>
+<div class="records-panel">
+<div class="table-toolbar"><div class="filters" role="group" aria-label="按状态筛选"><button data-filter="all" class="filter selected" aria-pressed="true">全部</button><button data-filter="active" class="filter" aria-pressed="false">进行中 <span id="active-count">0</span></button><button data-filter="attention" class="filter" aria-pressed="false">需关注 <span id="attention-count">0</span></button><button data-filter="completed" class="filter" aria-pressed="false">已发布</button></div><label class="search-box"><svg><use href="#i-search"/></svg><input id="review-search" type="search" aria-label="搜索审查记录" placeholder="搜索仓库、PR 或提交" autocomplete="off"></label></div>
+<div class="table-wrap"><table><thead><tr><th>仓库 / Pull request</th><th>状态</th><th>提交</th><th>更新时间</th><th class="align-right">操作</th></tr></thead><tbody id="reviews"></tbody></table></div>
+<div id="empty" class="empty" hidden><div class="empty-icon"><svg><use href="#i-search"/></svg></div><h3 id="empty-title">还没有审查记录</h3><p id="empty-description">配置仓库并启动服务后，新的 PR 会自动进入队列。</p><button id="clear-filters" class="text-button" hidden>清除筛选</button></div>
+<div class="table-footer"><span id="result-count">正在读取</span><div class="pagination"><button id="previous-page" class="icon-button" aria-label="上一页">←</button><span id="page-label">1 / 1</span><button id="next-page" class="icon-button" aria-label="下一页">→</button></div></div>
 </div>
-</div>
+</section>
+<section class="review-cta"><div><h2>指定一个 PR，开始审查。</h2><p>沿用已有会话，重新检查当前提交。</p></div><button class="button light" data-open-retry>发起审查<svg><use href="#i-arrow"/></svg></button></section>
+</section>
+<section id="settings" class="view" aria-labelledby="settings-heading" hidden>
+<div class="page-heading"><span class="section-kicker">按你的工作方式连接</span><h1 id="settings-heading">连接配置<span class="accent-period">.</span></h1><p>模型、仓库与服务入口，集中管理。</p></div>
+<div class="settings-layout"><aside class="settings-note"><svg><use href="#i-sliders"/></svg><h2>配置好，交给 Mojo。</h2><p>修改配置需要先停止审查服务。保存后，启动服务即可生效。</p><div class="note-divider"></div><strong>密钥不会回显</strong><p>输入框留空，将保留已有密钥。</p><button class="text-button" data-tab="overview">返回工作台 →</button></aside>
 <form id="config-form">
-<fieldset>
+<fieldset class="settings-card">
 <legend>模型</legend>
 <div class="form-grid">
 <label>供应商<input name="provider" placeholder="openai-compatible" required>
@@ -135,7 +103,7 @@
 </label>
 </div>
 </fieldset>
-<fieldset>
+<fieldset class="settings-card">
 <legend>GitHub 与 webhook</legend>
 <div class="form-grid">
 <label>审查账户<input name="reviewer_account" value="raymojo42" required>
@@ -160,24 +128,18 @@
 <p class="muted">两个账户需先通过 gh auth login 登录。Reviewer 发布评论使用审查账户。</p>
 </fieldset>
 <div class="form-footer">
-<button class="primary">保存配置</button>
+<button class="button primary">保存配置</button>
 <span id="config-note" class="muted">
 </span>
 </div>
 </form>
+</div></section>
+<section id="logs" class="view" aria-labelledby="logs-heading" hidden>
+<div class="page-heading"><span class="section-kicker">看清每一步运行</span><h1 id="logs-heading">运行日志<span class="accent-period">.</span></h1><p>当前管理器最近 400 行输出，已过滤配置中的凭据。</p></div>
+<div class="log-workspace"><div class="log-toolbar"><label class="search-box"><svg><use href="#i-search"/></svg><input id="log-search" type="search" placeholder="搜索日志内容" aria-label="搜索日志"></label><div class="log-actions"><button id="pause-logs" class="button secondary" aria-pressed="false">暂停更新</button><button id="copy-logs" class="icon-button" aria-label="复制当前日志" title="复制当前日志"><svg><use href="#i-copy"/></svg></button></div></div><div class="log-meta"><span id="log-count">0 行</span><label class="check"><input id="follow-logs" type="checkbox" checked>跟随最新日志</label></div><div id="log-output" class="log-output" tabindex="0" role="region" aria-label="日志内容"></div><div class="log-footer"><span id="log-stream" class="status good">实时更新</span><span>每 3 秒同步</span></div></div>
 </section>
-<section id="logs" class="view" hidden>
-<div class="section-title">
-<div>
-<h2>运行日志</h2>
-<p class="muted">当前管理器最近 400 行，已过滤配置中的凭据。</p>
-</div>
-</div>
-<pre id="log-output" tabindex="0">
-</pre>
-</section>
-<footer>MojoReviewer <span>本机服务 · 页面每 3 秒更新</span>
-</footer>
+<footer><a class="footer-brand" href="#overview">mojoreviewer.</a><span id="last-updated">正在同步</span><span>本机工作台 <span class="footer-dot">·</span> 只读审查优先</span></footer>
 </main>
-</body>
-</html>
+<dialog id="retry-dialog" aria-labelledby="retry-title"><div class="dialog-heading"><div><span class="section-kicker">手动触发</span><h2 id="retry-title">发起一次审查</h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p class="muted">选择已配置的仓库与 PR。Mojo 会复用已有会话，审查当前提交。</p><form id="retry-form"><label for="retry-repo">仓库</label><select id="retry-repo" required></select><label for="retry-number">Pull request 编号</label><input id="retry-number" type="number" min="1" step="1" placeholder="例如 42" required><p id="retry-note" class="muted"></p><button class="button primary" type="submit">加入审查队列<svg><use href="#i-arrow"/></svg></button></form></dialog>
+<dialog id="detail-dialog" aria-labelledby="detail-title"><div class="dialog-heading"><div><span class="section-kicker">审查详情</span><h2 id="detail-title"></h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><div id="detail-content"></div><div id="detail-actions" class="dialog-actions"></div></dialog>
+</body></html>
