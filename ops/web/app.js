@@ -113,8 +113,8 @@ function renderReviews(force = false) {
     const sha = node('td'); sha.append(node('code', (item.head_sha || '待解析').slice(0,8), 'sha-code')); row.append(sha);
     const date = dates(item.updated_at), time = node('td', date[0], 'time-cell'); time.append(node('small', date[1])); time.title = item.updated_at || ''; row.append(time);
     const actionCell = node('td'), actions = node('div', undefined, 'row-actions');
-    const link = commentLink(item); if (link) actions.append(link);
-    const detail = node('button', '详情', 'row-detail'); detail.setAttribute('aria-label', `查看 ${item.repo} #${item.number} 的审查详情`); detail.addEventListener('click', () => showDetail(item)); actions.append(detail); actionCell.append(actions); row.append(actionCell); rows.append(row);
+    const session = node('button','会话','row-detail'); session.setAttribute('aria-label', `查看 ${item.repo} #${item.number} 的会话记录`); session.addEventListener('click', () => showDetail(item,'session')); actions.append(session);
+    const detail = node('button', '正文', 'row-detail'); detail.setAttribute('aria-label', `查看 ${item.repo} #${item.number} 的审查详情`); detail.addEventListener('click', () => showDetail(item)); actions.append(detail); actionCell.append(actions); row.append(actionCell); rows.append(row);
   }
   $('#reviews').replaceChildren(rows);
   $('#empty').hidden = result.total > 0;
@@ -142,7 +142,7 @@ function renderDetail() {
   const retry = node('button','重新审查','button primary'); retry.disabled = !UI.canAct('retry',state,online,busy); retry.addEventListener('click', async () => {if(await action('retry',{repo:item.repo,number:item.number})) $('#detail-dialog').close();}); actions.append(retry);
   const link = commentLink(item); if (link) actions.append(link);
 }
-function showDetail(item) { selectedReview = item; lastDetail = ''; renderDetail(); $('#detail-dialog').showModal(); }
+function showDetail(item, tab = 'content') { selectedReview = item; lastDetail = ''; renderDetail(); $('#detail-dialog').showModal(); window.MojoInspector.open(item,tab); }
 function renderLogs(force = false) {
   if (!paused) displayedLogs = state.logs;
   const lines = UI.logLines(displayedLogs, $('#log-search').value);

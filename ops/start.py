@@ -19,6 +19,9 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
+
+from review_details import ReviewDetails, DetailError
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
@@ -26,7 +29,7 @@ SECRET = re.compile(r"(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-
 WEB_ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
     **{f"/{name}": (name, "text/javascript; charset=utf-8")
-       for name in ("app.js", "ui.js", "gsap.min.js", "ScrollTrigger.min.js")},
+       for name in ("app.js", "ui.js", "gsap.min.js", "ScrollTrigger.min.js", "marked.umd.js", "purify.min.js", "inspector.js")},
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/mark.svg": ("mark.svg", "image/svg+xml"),
     "/satoshi.woff2": ("satoshi.woff2", "font/woff2"),
@@ -671,11 +674,39 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.respond(200, manager.snapshot())
             elif self.path == "/api/config":
                 self.respond(200, manager.public_config())
+            elif urlsplit(self.path).path.startswith("/api/reviews/"):
+                route = urlsplit(self.path)
+                query = parse_qs(route.query, keep_blank_values=True, max_num_fields=12)
+                if any(len(values) != 1 for values in query.values()):
+                    raise DetailError("重复的读取参数")
+                def arg(name, default=""):
+                    return query.get(name, [default])[0]
+                def number(name, default):
+                    try:
+                        return int(arg(name, str(default)))
+                    except ValueError:
+                        raise DetailError("读取范围必须是整数") from None
+                detail = ReviewDetails(manager, arg("id"))
+                if route.path == "/api/reviews/content":
+                    result = detail.content()
+                elif route.path == "/api/reviews/session":
+                    result = detail.transcript(arg("session"), arg("source", "live"),
+                                               number("offset", 0), number("limit", 30), arg("version"))
+                elif route.path == "/api/reviews/message":
+                    result = detail.message_block(arg("session"), arg("source", "live"), arg("version"),
+                                                  number("index", -1), arg("field"), number("offset", 0))
+                else:
+                    raise DetailError("不存在", 404)
+                self.respond(200, result)
             elif self.path in WEB_ASSETS:
                 name, mime = WEB_ASSETS[self.path]
                 self.respond(200, (ROOT / "ops/web" / name).read_bytes(), mime)
             else:
                 self.respond(404, {"error": "不存在"})
+        except DetailError as error:
+            self.respond(error.status, {"error": str(error)})
+        except ValueError:
+            self.respond(400, {"error": "读取参数无效"})
         except Exception:
             self.respond(500, {"error": "读取状态失败"})
 

@@ -6,7 +6,8 @@
 <link rel="icon" href="/mark.svg" type="image/svg+xml">
 <link rel="stylesheet" href="/style.css">
 <script src="/gsap.min.js" defer></script><script src="/ScrollTrigger.min.js" defer></script>
-<script src="/ui.js" defer></script><script src="/app.js" defer></script>
+<script src="/marked.umd.js" defer></script><script src="/purify.min.js" defer></script>
+<script src="/ui.js" defer></script><script src="/inspector.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
 <svg class="icon-library" aria-hidden="true" xmlns="http://www.w3.org/2000/svg"><defs>
@@ -141,5 +142,5 @@
 <footer><a class="footer-brand" href="#overview">mojoreviewer.</a><span id="last-updated">正在同步</span><span>本机工作台 <span class="footer-dot">·</span> 只读审查优先</span></footer>
 </main>
 <dialog id="retry-dialog" aria-labelledby="retry-title"><div class="dialog-heading"><div><span class="section-kicker">手动触发</span><h2 id="retry-title">发起一次审查</h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><p class="muted">选择已配置的仓库与 PR。Mojo 会复用已有会话，审查当前提交。</p><form id="retry-form"><label for="retry-repo">仓库</label><select id="retry-repo" required></select><label for="retry-number">Pull request 编号</label><input id="retry-number" type="number" min="1" step="1" placeholder="例如 42" required><p id="retry-note" class="muted"></p><button class="button primary" type="submit">加入审查队列<svg><use href="#i-arrow"/></svg></button></form></dialog>
-<dialog id="detail-dialog" aria-labelledby="detail-title"><div class="dialog-heading"><div><span class="section-kicker">审查详情</span><h2 id="detail-title"></h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><div id="detail-content"></div><div id="detail-actions" class="dialog-actions"></div></dialog>
+<dialog id="detail-dialog" aria-labelledby="detail-title"><div class="dialog-heading"><div><span class="section-kicker">审查详情</span><h2 id="detail-title"></h2></div><button class="icon-button" data-close-dialog aria-label="关闭"><svg><use href="#i-close"/></svg></button></div><div id="detail-content" class="detail-metadata"></div><div class="inspector-nav"><div class="inspector-tabs" role="group" aria-label="审查内容"><button data-inspector-tab="content" aria-pressed="true" class="selected">审查正文</button><button data-inspector-tab="session" aria-pressed="false">会话记录</button><button data-inspector-tab="context" aria-pressed="false">上下文</button></div><button id="inspector-reload" class="icon-button" aria-label="重新加载内容" title="重新加载内容"><svg><use href="#i-refresh"/></svg></button></div><div id="inspector-body" tabindex="0" aria-live="polite"></div><div id="detail-actions" class="dialog-actions"></div></dialog>
 </body></html>

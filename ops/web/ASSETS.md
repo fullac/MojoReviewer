@@ -7,3 +7,7 @@
 - mark.svg and UI symbols: original geometric artwork for this interface.
 
 All runtime assets are served from the existing loopback origin. No CDN scripts, remote fonts, tracking, or external image requests are required. The manager's existing same-origin CSP remains unchanged.
+
+- marked 18.1.2: https://registry.npmjs.org/marked/-/marked-18.1.2.tgz. License retained in marked-LICENSE.txt.
+
+- dompurify 3.4.17: https://registry.npmjs.org/dompurify/-/dompurify-3.4.17.tgz. License retained in dompurify-LICENSE.txt.
