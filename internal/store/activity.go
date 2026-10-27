@@ -18,6 +18,8 @@ type Activity struct {
 	Stage      string `json:"stage,omitempty"`
 	UpdatedAt  string `json:"updated_at"`
 	CommentURL string `json:"comment_url,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	StartedAt  string `json:"started_at,omitempty"`
 }
 
 // Activity records queued/running/terminal states in a bounded, atomic snapshot.

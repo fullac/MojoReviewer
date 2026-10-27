@@ -21,6 +21,8 @@ type Runner struct {
 	timeout    time.Duration
 	memory     *projectmem.Indexer
 	fixEnabled bool
+	provider   string
+	model      string
 }
 
 // New 启动嵌入式 LuckyAgent。HomeDir 必须是本服务自己的目录。
@@ -46,7 +48,7 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
+	return &Runner{agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled, provider: cfg.Provider, model: cfg.Model}, nil
 }
 
 // FixEnabled 报告进程是否允许 fix 可写会话。
@@ -97,6 +99,26 @@ type ReviewInput struct {
 	Diff      string
 	SessionID string
 	Memory    projectmem.ContextBundle
+	OnSession func(SessionContext)
+}
+
+// SessionContext is the host input, captured before the model runs. SDK-added
+// dynamic context and per-request tool schemas are not represented by it.
+type SessionContext struct {
+	SessionID, SystemPrompt, TaskPrompt, Provider, Model string
+	MessageStart                                         int
+}
+
+func (r *Runner) notifySession(input ReviewInput, sessionID, taskPrompt string) {
+	if input.OnSession == nil {
+		return
+	}
+	start := 0
+	if sess, ok := r.agent.Underlying().Sessions().Get(sessionID); ok && sess != nil {
+		start = sess.MessageCount()
+	}
+	input.OnSession(SessionContext{SessionID: sessionID, SystemPrompt: systemPrompt,
+		TaskPrompt: taskPrompt, MessageStart: start, Provider: r.provider, Model: r.model})
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
@@ -145,7 +167,9 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.runModel(ctx, sessionID, prompt(input))
+	message := prompt(input)
+	r.notifySession(input, sessionID, message)
+	text, err := r.runModel(ctx, sessionID, message)
 	return reviewResult(sessionID, text, notes, reads, err)
 }
 
@@ -212,7 +236,9 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 	if err := lockToolsToFixMode(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
-	text, err := r.runModel(ctx, sessionID, fixPrompt(input))
+	message := fixPrompt(input)
+	r.notifySession(input, sessionID, message)
+	text, err := r.runModel(ctx, sessionID, message)
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}

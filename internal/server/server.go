@@ -165,7 +165,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	if id == "" {
 		id = fmt.Sprint(time.Now().UnixNano())
 	}
-	activity := store.Activity{ID: id, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "running"}
+	activity := store.Activity{ID: id, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "running", StartedAt: time.Now().UTC().Format(time.RFC3339Nano)}
 	defer func() {
 		if activity.State == "running" {
 			activity.State = "failed"
@@ -252,9 +252,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
+		OnSession: s.captureSession(&activity),
 	})
 	storageFailed := false
 	if result.SessionID != "" {
+		activity.SessionID = result.SessionID
 		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {
 			storageFailed = true
 			activity.State, activity.Stage = "failed", "storage"
@@ -301,9 +303,11 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
+		OnSession: s.captureSession(a),
 	})
 	storageFailed := false
 	if result.SessionID != "" {
+		a.SessionID = result.SessionID
 		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {
 			storageFailed = true
 			a.State, a.Stage = "failed", "storage"
@@ -356,6 +360,23 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 	}
 	a.CommentURL = commentURL
 	slog.Info("修复完成", "pr", item.SessionKey, "changed", pub.Changed, "sha", pub.CommitSHA)
+}
+
+func (s *Server) captureSession(activity *store.Activity) func(agent.SessionContext) {
+	return func(value agent.SessionContext) {
+		activity.SessionID = value.SessionID
+		if err := s.store.Activity(*activity); err != nil {
+			slog.Error("记录审查会话关联失败", "pr", activity.Repo, "stage", "storage")
+		}
+		if err := s.store.SaveReviewContext(store.ReviewContext{
+			AttemptID: activity.ID, Repo: activity.Repo, Number: activity.Number, SessionID: value.SessionID,
+			MessageStart: value.MessageStart, SystemPrompt: value.SystemPrompt, TaskPrompt: value.TaskPrompt,
+			Provider: value.Provider, Model: value.Model,
+		}); err != nil {
+			// Context can contain repository material; keep its contents out of logs.
+			slog.Error("保存审查上下文失败", "pr", activity.Repo, "stage", "storage")
+		}
+	}
 }
 
 func publishMessage(item github.Review, _ string) string {

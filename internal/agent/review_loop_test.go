@@ -39,6 +39,8 @@ func TestManagedReviewLoop(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var requests, verifications atomic.Int32
 			var sawReadReceipt atomic.Bool
+			var captured atomic.Int32
+			var contexts []SessionContext
 			var sawTemplateRejection, wrongTemperature atomic.Bool
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				var req struct {
@@ -56,6 +58,9 @@ func TestManagedReviewLoop(t *testing.T) {
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					http.Error(w, "bad request", 400)
 					return
+				}
+				if captured.Load() == 0 {
+					t.Error("model called before session context capture")
 				}
 				if !tc.fix {
 					// Assert the provider payload, not just the SDK registry: prompt
@@ -129,6 +134,10 @@ func TestManagedReviewLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := ReviewInput{WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"}}
+			input.OnSession = func(value SessionContext) {
+				contexts = append(contexts, value)
+				captured.Add(1)
+			}
 			var result ReviewResult
 			if tc.fix {
 				result, err = runner.Fix(context.Background(), input)
@@ -158,6 +167,9 @@ func TestManagedReviewLoop(t *testing.T) {
 					t.Fatalf("duplicate read receipt lost: %+v", failure)
 				}
 			}
+			if len(contexts) != 1 || contexts[0].SessionID != result.SessionID || contexts[0].SystemPrompt != systemPrompt || contexts[0].TaskPrompt == "" || contexts[0].MessageStart != 0 {
+				t.Fatal("missing actual initial context")
+			}
 			if result.Noted != tc.noted || (tc.noted && !strings.Contains(result.Text, "fixture finding")) || strings.Contains(result.Text, "模型自由文本") {
 				t.Fatalf("wrong host-rendered notes: %+v", result)
 			}
@@ -178,6 +190,9 @@ func TestManagedReviewLoop(t *testing.T) {
 				resumed, err := runner.Review(context.Background(), input)
 				if err != nil || resumed.SessionID != result.SessionID || resumed.Noted || !strings.Contains(resumed.Text, "未记录审查意见") {
 					t.Fatalf("session reuse leaked prior notes: %+v %v", resumed, err)
+				}
+				if len(contexts) != 2 || contexts[1].SessionID != result.SessionID || contexts[1].MessageStart <= 0 {
+					t.Fatal("reused session context lost history boundary")
 				}
 				if verifications.Load() != 0 {
 					t.Fatal("session reuse invoked completion verifier")

@@ -211,6 +211,34 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatal("queued task reacted before starting")
 	}
 	runner.onReview = func() {
+		input := runner.inputs[len(runner.inputs)-1]
+		if input.OnSession == nil {
+			t.Fatal("host did not bind session observer")
+		}
+		input.OnSession(agent.SessionContext{SessionID: "existing-session", SystemPrompt: "system fixture", TaskPrompt: "task fixture", MessageStart: 8, Provider: "fixture", Model: "fixture"})
+		rawActivity, _ := os.ReadFile(filepath.Join(s.cfg.DataDir, "activity.json"))
+		var receipts []store.Activity
+		if err := json.Unmarshal(rawActivity, &receipts); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, receipt := range receipts {
+			if receipt.State == "running" && receipt.SessionID == "existing-session" && receipt.StartedAt != "" {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatal("running receipt lacks immutable session association")
+		}
+		contexts, _ := filepath.Glob(filepath.Join(s.cfg.DataDir, "review_context", "*.json"))
+		if len(contexts) != 1 {
+			t.Fatal("context not persisted before model")
+		}
+		contextRaw, _ := os.ReadFile(contexts[0])
+		var captured store.ReviewContext
+		if err := json.Unmarshal(contextRaw, &captured); err != nil || captured.TaskPrompt != "task fixture" || captured.MessageStart != 8 || captured.SessionID != "existing-session" {
+			t.Fatal("wrong captured context", err)
+		}
 		raw, err := os.ReadFile(os.Getenv("MOJO_TEST_REACTION"))
 		if err != nil || !strings.Contains(string(raw), "repos/acme/web/issues/comments/6382461298/reactions") {
 			t.Fatalf("missing trigger comment reaction before model: %s %v", raw, err)
