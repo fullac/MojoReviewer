@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,10 +47,29 @@ func TestManagedReviewLoop(t *testing.T) {
 					Messages    []struct {
 						Content string `json:"content"`
 					} `json:"messages"`
+					Tools []struct {
+						Function struct {
+							Name string `json:"name"`
+						} `json:"function"`
+					} `json:"tools"`
 				}
 				if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 					http.Error(w, "bad request", 400)
 					return
+				}
+				if !tc.fix {
+					// Assert the provider payload, not just the SDK registry: prompt
+					// intent gating can silently remove enabled tools. Check every
+					// request, including later iterations and the reused session.
+					var names []string
+					for _, tool := range req.Tools {
+						names = append(names, tool.Function.Name)
+					}
+					slices.Sort(names)
+					want := []string{"changed_symbols", "pr_diff_stat", "pr_file_diff", "read_repo_file", "repo_grep", "review_note", "tests_around"}
+					if !slices.Equal(names, want) {
+						t.Errorf("provider tools = %v, want exactly %v", names, want)
+					}
 				}
 				if req.Temperature != 0.5 {
 					wrongTemperature.Store(true)

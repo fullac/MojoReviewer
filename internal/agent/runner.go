@@ -327,12 +327,14 @@ func prompt(input ReviewInput) string {
 	writePRData(&b, input)
 	// CodeFarmer-style: never pin a full diff into the durable goal/history.
 	// The model must fetch the file map and per-file patches via tools.
+	// LH narrows provider schemas to explicitly requested tools. Give every
+	// review tool its own call/use wording, including the optional search tools.
 	b.WriteString("\n不要期待提示词里有整份 diff。diff 不会预注入上下文（避免 durable goal 双倍占用预算）。\n")
 	b.WriteString("先用这些工具，不要再把整份仓库读进上下文：\n")
 	b.WriteString("1. 先调用 pr_diff_stat(offset=0, limit=50) 看文件地图；has_more=true 时用 next_offset 续取，直到 has_more=false。patch_truncated 只表示 patch 超限，不是文件列表被截断。\n")
 	b.WriteString("2. 对重点文件调用 pr_file_diff，每个 path 默认只读一次；需要上下文时用 read_repo_file 明确指定 start_line/end_line，同一行段不要重复读取。工具提示已读时改读未读范围或收束，不要循环重试。\n")
-	b.WriteString("3. changed_symbols 看动了哪些函数和类型，再用 read_repo_file 或 repo_grep 看调用方。\n")
-	b.WriteString("4. tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
+	b.WriteString("3. 按需调用 changed_symbols 看动了哪些函数和类型；按需调用 repo_grep 定位定义和调用方，再用 read_repo_file 读取相关行段。\n")
+	b.WriteString("4. 按需调用 tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
 	b.WriteString("5. 每发现一条问题就调用 review_note，填写简短 title 与 Markdown body；遵守系统提示中的评论表达规则。severity 只能是「严重」或「建议」。\n\n")
 	b.WriteString("主线证据足够后必须记录 review_note 并结束；没有发现问题则明确结束，不为凑结论反复读文件。无法核实的范围应明确说明，不能宣称完整审查。\n")
 	b.WriteString("规则：\n")
