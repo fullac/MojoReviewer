@@ -52,6 +52,7 @@ internal/review/comment_safety.go 评论凭据检查，命中拒绝发布
 internal/agent/runner.go     sdk.New、会话、提示词
 internal/agent/register.go   每次审查重新绑定那 7 个工具
 internal/store/store.go      data_dir/reviews.json，记 session 与自动尝试 SHA 历史
+internal/store/progress.go   data_dir/progress/<attempt>.json，单次审查的脱敏进度
 internal/projectmem/         项目记忆：选文档、增量索引、审查前提示注入
 internal/config/config.go    .MojoReviewer/config.json
 config.example.json          可提交的配置样例（无真实密钥）
@@ -125,6 +126,8 @@ config.example.json          可提交的配置样例（无真实密钥）
 `data_dir` 默认 `~/.mojoreviewer`。LuckyAgent 家目录是其中的 `luckyagent/`，不读写 `~/.luckyagent`。审查记录在 `reviews.json`，项目记忆元数据在 `project_memory.json`，权限都是 `0600`。RAG 与长期记忆落在 `luckyagent/` 内，按仓库隔离 source 前缀 `repo:<owner/name>:`。
 
 `reviews.json` 的 `auto_heads` 独立于最近会话的 `head_sha`。写会话不能清除自动尝试历史；旧记录缺此字段时保守迁移已有 head。审查记录和活动回执通过临时文件、Sync、rename 原子写入。排队回执写入失败返回 500，不能接受任务后丢失记录。
+
+`data_dir/progress/<attempt-id>.json` 只记这一次尝试的阶段事件：开始、检出、模型请求次数、工具名、相对路径、行范围、已读回执、笔记的严重级别和短标题、发布或归类失败原因。不写 prompt、diff、文件正文、模型自由回复、令牌或绝对路径。管理台按尝试读取，不从 LuckyAgent 会话取记录。
 
 `log_level` 支持 `debug`、`info`、`warn`、`error`，作用于 Mojo 宿主的 `slog` 日志；不修改 SDK 内部日志配置。
 
