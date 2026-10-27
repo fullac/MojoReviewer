@@ -12,7 +12,9 @@ import re
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
+import sys
 import threading
 import time
 import urllib.error
@@ -54,6 +56,18 @@ def read_json(path, default):
         return default
 
 
+def tls_context():
+    # python.org macOS installs may lack the optional OpenSSL CA bundle.
+    # Retain certificate verification and respect explicit trust-store settings.
+    paths = ssl.get_default_verify_paths()
+    system_ca = Path("/etc/ssl/cert.pem")
+    if (sys.platform == "darwin" and not paths.cafile and not paths.capath
+            and "SSL_CERT_FILE" not in os.environ and "SSL_CERT_DIR" not in os.environ
+            and system_ca.is_file()):
+        return ssl.create_default_context(cafile=str(system_ca))
+    return ssl.create_default_context()
+
+
 class Manager:
     def __init__(self, root=ROOT, binary=None):
         self.root = Path(root).resolve()
@@ -79,6 +93,12 @@ class Manager:
         self.tokens = []
         self.last_reconcile = 0
         self.last_probe = 0
+        self.last_local_probe = 0
+        self.local_failures = 0
+        self.tunnel_invalid = threading.Event()
+        self.hooks_pending = False
+        self.next_hook = 0
+        self.hook_backoff = 2
 
     def redact(self, text):
         for token in self.tokens + [self.cfg.get("agent", {}).get("api_key", ""),
@@ -151,6 +171,8 @@ class Manager:
         handlers = [NoRedirect()]
         if base.startswith("http://127.0.0.1:"):
             handlers.append(urllib.request.ProxyHandler({}))
+        else:
+            handlers.append(urllib.request.HTTPSHandler(context=tls_context()))
         with urllib.request.build_opener(*handlers).open(req, timeout=10) as response:
             return response.status, response.read().decode()
 
@@ -174,10 +196,13 @@ class Manager:
             for line in process.stdout:
                 if name == "tunnel":
                     match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
-                    if match:
-                        with self.lock:
-                            if self.children.get(name) is process:
+                    with self.lock:
+                        if self.children.get(name) is process:
+                            if match:
                                 self.url = match.group()
+                            if "Unauthorized: Tunnel not found" in line:
+                                self.tunnel_invalid.set()
+                                self.wake.set()
                 self.log(name + ": " + line.rstrip())
         finally:
             process.stdout.close()
@@ -187,6 +212,8 @@ class Manager:
             process = self.children.pop(name, None)
             if name == "tunnel":
                 self.url = ""
+                self.tunnel_invalid.clear()
+                self.hooks_pending = False
         if process:
             try:
                 os.killpg(process.pid, signal.SIGTERM)
@@ -207,6 +234,7 @@ class Manager:
         with self.lock:
             self.phase = "stopped"
             self.failures = 0
+            self.local_failures = 0
 
     def start_reviewer(self):
         self.cfg = read_json(self.path, {})
@@ -228,10 +256,12 @@ class Manager:
             if self.command is not None:
                 return
             if self.probe(self.local_url()):
+                self.last_local_probe = time.monotonic()
                 return
             if self.children["reviewer"].poll() is not None:
                 break
             self.exit.wait(0.5)
+        self.stop_child("reviewer")
         raise RuntimeError("reviewer 启动失败，查看日志")
 
     def rebuild(self):
@@ -242,14 +272,17 @@ class Manager:
         while time.monotonic() < deadline and not self.exit.is_set():
             if self.command is not None:
                 return
+            if self.tunnel_invalid.is_set():
+                break
             if self.url and self.probe(self.url):
-                self.configure_hooks()
                 self.failures = 0
-                self.phase = "running"
+                self.phase = "configuring"
+                self.hooks_pending = True
+                self.next_hook = 0
+                self.hook_backoff = 2
                 self.error = ""
                 self.last_probe = time.monotonic()
-                self.log("隧道已恢复，webhook 已更新")
-                self.reconcile()
+                self.log("隧道签名探测通过，等待更新 webhook")
                 return
             if self.children["tunnel"].poll() is not None:
                 break
@@ -262,7 +295,7 @@ class Manager:
             raise ValueError("请配置仓库和 webhook ID（新建填 0）")
         for repo, hook in hooks.items():
             if self.exit.is_set() or self.command is not None:
-                return
+                return False
             if repo not in self.cfg.get("github", {}).get("repos", []):
                 raise ValueError("webhook 仓库必须在 github.repos 白名单内")
             payload = {"active": True, "events": ["pull_request", "issue_comment"],
@@ -284,6 +317,29 @@ class Manager:
                 atomic_json(self.path, self.cfg)
                 self.state.pop("creating", None)
                 atomic_json(self.state_path, self.state)
+            current = self.gh(f"repos/{repo}/hooks/{int(hooks[repo])}")
+            if (not current.get("active") or current.get("config", {}).get("url") != payload["config"]["url"]
+                    or set(current.get("events", [])) != set(payload["events"])):
+                raise RuntimeError("webhook 回读不一致，稍后重试更新")
+        return True
+
+    def sync_hooks(self):
+        # A GitHub API failure must not discard a healthy public tunnel.
+        try:
+            if not self.configure_hooks():
+                return
+        except Exception as error:
+            self.error = self.redact(str(error))
+            self.log("webhook 更新失败，保留当前隧道：" + self.error)
+            self.next_hook = time.monotonic() + self.hook_backoff
+            self.hook_backoff = min(60, self.hook_backoff * 2)
+            return
+        self.hooks_pending = False
+        self.phase = "running"
+        self.error = ""
+        self.backoff = 2
+        self.last_reconcile = 0
+        self.log("公网入口已恢复，webhook 回读验证通过")
 
     def record_data(self):
         directory = Path(self.cfg.get("data_dir") or Path.home() / ".mojoreviewer").expanduser()
@@ -430,23 +486,46 @@ class Manager:
             self.start_reviewer()
         if self.command is not None or self.exit.is_set():
             return
+        now = time.monotonic()
+        if now - self.last_local_probe >= 30:
+            self.last_local_probe = now
+            if self.probe(self.local_url()):
+                self.local_failures = 0
+            else:
+                self.local_failures += 1
+                self.error = f"本地 reviewer 签名探测失败 {self.local_failures}/3"
+                self.log(self.error)
+                if self.local_failures >= 3:
+                    self.stop_all()
+                    self.phase = "error"
+                    self.next_start = time.monotonic() + self.backoff
+                    self.backoff = min(60, self.backoff * 2)
+                return
+        if self.local_failures:
+            return
         tunnel = self.children.get("tunnel")
-        if not tunnel or tunnel.poll() is not None or self.phase != "running":
+        if not tunnel or tunnel.poll() is not None or self.tunnel_invalid.is_set() or self.phase == "recovering":
             self.rebuild()
         if self.command is not None or self.exit.is_set():
             return
+        now = time.monotonic()
         if now - self.last_probe >= 30:
             self.last_probe = now
             if self.probe(self.url):
                 self.failures = 0
                 self.backoff = 2
-                self.error = ""
+                if not self.hooks_pending:
+                    self.error = ""
             else:
                 self.failures += 1
                 self.log(f"入口签名探测失败 {self.failures}/3")
                 if self.failures >= 3:
                     self.rebuild()
-        if now - self.last_reconcile >= 60 and self.failures == 0:
+        if self.command is not None or self.exit.is_set():
+            return
+        if self.hooks_pending and self.failures == 0 and time.monotonic() >= self.next_hook:
+            self.sync_hooks()
+        if self.phase == "running" and now - self.last_reconcile >= 60 and self.failures == 0:
             self.reconcile()
 
     def run(self):
@@ -476,6 +555,8 @@ class Manager:
                     "error": self.error, "pending": self.command is not None,
                     "pids": {name: p.pid for name, p in self.children.items() if p.poll() is None},
                     "health_failures": self.failures, "activity": activity[::-1],
+                    "local_health_failures": self.local_failures,
+                    "hooks_pending": self.hooks_pending,
                     "logs": list(self.logs), "csrf": self.csrf}
 
     def public_config(self):

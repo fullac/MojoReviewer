@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from start import Handler, Manager, atomic_json, valid_duration
+from start import Handler, Manager, atomic_json, tls_context, valid_duration
 
 
 class ManagerTests(unittest.TestCase):
@@ -72,7 +72,8 @@ class ManagerTests(unittest.TestCase):
         child = Mock()
         child.poll.return_value = None
         self.m.children = {"reviewer": child, "tunnel": child}
-        self.m.probe = Mock(return_value=False)
+        self.m.probe = Mock(side_effect=lambda url: url == self.m.local_url())
+        self.m.url = "https://unit-test.trycloudflare.com"
         self.m.rebuild = Mock()
         self.m.start_reviewer = Mock()
         self.m.stop_all = Mock()
@@ -101,7 +102,9 @@ class ManagerTests(unittest.TestCase):
 
     def test_hook_update_keeps_secret_and_only_adopted_id(self):
         self.m.url = "https://unit-test.trycloudflare.com"
-        self.m.gh = Mock(return_value={"name": "web"})
+        self.m.gh = Mock(return_value={"name": "web", "active": True,
+                                      "config": {"url": self.m.url + "/webhook/github"},
+                                      "events": ["pull_request", "issue_comment"]})
         self.m.configure_hooks()
         calls = self.m.gh.call_args_list
         self.assertEqual(calls[0].args[0], "repos/acme/web/hooks/42")
@@ -112,7 +115,9 @@ class ManagerTests(unittest.TestCase):
     def test_new_hook_id_persisted_before_next_repo(self):
         self.m.cfg["manager"]["hooks"]["acme/web"] = 0
         self.m.url = "https://unit-test.trycloudflare.com"
-        self.m.gh = Mock(return_value={"id": 987})
+        self.m.gh = Mock(return_value={"id": 987, "active": True,
+                                      "config": {"url": self.m.url + "/webhook/github"},
+                                      "events": ["pull_request", "issue_comment"]})
         self.m.configure_hooks()
         self.assertEqual(json.loads(self.m.path.read_text())["manager"]["hooks"]["acme/web"], 987)
 
@@ -276,6 +281,180 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(self.m.snapshot()["activity"], [])
         atomic_json(self.root / "data/activity.json", [{"state": "running"}])
         self.assertEqual(self.m.snapshot()["activity"][0]["state"], "interrupted")
+
+    def running_manager(self):
+        self.m.desired = True
+        self.m.phase = "running"
+        self.m.url = "https://unit-test.trycloudflare.com"
+        for name in ("reviewer", "tunnel"):
+            self.m.children[name] = Mock()
+            self.m.children[name].poll.return_value = None
+        self.m.last_reconcile = time.monotonic()
+        self.m.probe = Mock(return_value=True)
+        self.m.rebuild = Mock()
+
+    def test_local_unhealthy_does_not_churn_tunnels(self):
+        self.running_manager()
+        self.m.probe.return_value = False
+        self.m.stop_child = Mock(side_effect=lambda name: self.m.children.pop(name, None))
+        for _ in range(3):
+            self.m.last_local_probe = 0
+            self.m.tick()
+        self.m.rebuild.assert_not_called()
+        self.assertEqual(self.m.children, {})
+        self.assertEqual(self.m.phase, "error")
+        self.assertGreater(self.m.next_start, time.monotonic())
+
+    def test_local_transient_failure_recovers_without_restart(self):
+        self.running_manager()
+        self.m.probe.return_value = False
+        self.m.tick()
+        self.assertEqual(self.m.local_failures, 1)
+        self.m.probe.return_value = True
+        self.m.last_local_probe = 0
+        self.m.tick()
+        self.assertEqual(self.m.local_failures, 0)
+        self.assertEqual(self.m.error, "")
+        self.assertEqual(len(self.m.children), 2)
+        self.m.rebuild.assert_not_called()
+
+    def test_live_but_revoked_tunnel_recovers_immediately(self):
+        self.running_manager()
+        tunnel = self.m.children["tunnel"]
+        reviewer = self.m.children["reviewer"]
+        tunnel.stdout = io.StringIO('ERR error="Unauthorized: Tunnel not found"\n')
+        self.m.output("tunnel", tunnel)
+        self.assertTrue(self.m.wake.is_set())
+        self.m.tick()
+        self.m.rebuild.assert_called_once()
+        self.assertIs(self.m.children["reviewer"], reviewer)
+
+    def test_stale_tunnel_output_cannot_invalidate_replacement(self):
+        self.running_manager()
+        old = Mock(stdout=io.StringIO('https://stale.trycloudflare.com\nUnauthorized: Tunnel not found\n'))
+        self.m.output("tunnel", old)
+        self.assertFalse(self.m.tunnel_invalid.is_set())
+        self.assertEqual(self.m.url, "https://unit-test.trycloudflare.com")
+
+    def test_hook_failure_retains_tunnel_and_retries_same_url(self):
+        self.running_manager()
+        self.m.phase = "configuring"
+        self.m.hooks_pending = True
+        self.m.configure_hooks = Mock(side_effect=[RuntimeError("offline"), True])
+        self.m.reconcile = Mock()
+        before = dict(self.m.children)
+        url = self.m.url
+        self.m.tick()
+        self.assertTrue(self.m.hooks_pending)
+        self.assertEqual(self.m.phase, "configuring")
+        self.assertGreater(self.m.next_hook, time.monotonic())
+        self.m.last_probe = 0
+        self.m.tick()
+        self.assertEqual(self.m.configure_hooks.call_count, 1)
+        self.assertIn("offline", self.m.error)
+        self.m.next_hook = 0
+        self.m.tick()
+        self.assertEqual(self.m.phase, "running")
+        self.assertFalse(self.m.hooks_pending)
+        self.assertEqual(self.m.url, url)
+        self.assertEqual(self.m.children, before)
+        self.m.rebuild.assert_not_called()
+        self.m.reconcile.assert_called_once()
+
+    def test_hook_readback_mismatch_stays_pending(self):
+        self.running_manager()
+        self.m.phase = "configuring"
+        self.m.hooks_pending = True
+        self.m.gh = Mock(return_value={"name": "web", "active": True,
+                                      "config": {"url": "https://stale.trycloudflare.com/webhook/github"},
+                                      "events": ["pull_request", "issue_comment"]})
+        self.m.tick()
+        self.assertTrue(self.m.hooks_pending)
+        self.assertIn("回读不一致", self.m.error)
+        self.m.rebuild.assert_not_called()
+
+    def test_startup_timeout_reaps_owned_reviewer(self):
+        Path(self.m.binary).parent.mkdir(parents=True)
+        Path(self.m.binary).touch()
+        self.m.token = Mock(return_value="test")
+        self.m.spawn = Mock()
+        self.m.stop_child = Mock()
+        with patch("start.socket.socket") as sock, patch("start.time.monotonic", side_effect=[0, 26]):
+            sock.return_value.__enter__.return_value.connect_ex.return_value = 1
+            with self.assertRaisesRegex(RuntimeError, "启动失败"):
+                self.m.start_reviewer()
+        self.m.stop_child.assert_called_once_with("reviewer")
+
+    def test_macos_missing_ca_uses_verified_system_bundle(self):
+        paths = types.SimpleNamespace(cafile=None, capath=None)
+        with patch("start.sys.platform", "darwin"), patch("start.ssl.get_default_verify_paths", return_value=paths), \
+                patch("start.Path.is_file", return_value=True), patch.dict(os.environ, {}, clear=True), \
+                patch("start.ssl.create_default_context") as create:
+            tls_context()
+            create.assert_called_once_with(cafile="/etc/ssl/cert.pem")
+            create.reset_mock()
+            with patch.dict(os.environ, {"SSL_CERT_FILE": "/custom/ca.pem"}):
+                tls_context()
+            create.assert_called_once_with()
+
+    def test_existing_ca_and_other_platforms_keep_default_trust(self):
+        for platform, cafile in (("darwin", "/existing/ca.pem"), ("linux", None)):
+            with patch("start.sys.platform", platform), \
+                    patch("start.ssl.get_default_verify_paths", return_value=types.SimpleNamespace(cafile=cafile, capath=None)), \
+                    patch("start.ssl.create_default_context") as create:
+                tls_context()
+                create.assert_called_once_with()
+
+    def test_rebuild_waits_for_hook_sync_before_running(self):
+        reviewer = Mock()
+        self.m.children["reviewer"] = reviewer
+        self.m.configure_hooks = Mock()
+        self.m.probe = Mock(return_value=True)
+        self.m.stop_child = Mock()
+        def spawn(name, args):
+            child = Mock()
+            child.poll.return_value = None
+            self.m.children[name] = child
+            self.m.url = "https://new.trycloudflare.com"
+        self.m.spawn = Mock(side_effect=spawn)
+        self.m.rebuild()
+        self.assertEqual(self.m.phase, "configuring")
+        self.assertTrue(self.m.hooks_pending)
+        self.assertIs(self.m.children["reviewer"], reviewer)
+        self.m.configure_hooks.assert_not_called()
+        self.m.probe.assert_called_once_with(self.m.url)
+        self.m.stop_child.assert_called_once_with("tunnel")
+
+    def test_revoked_tunnel_during_startup_fails_without_waiting(self):
+        self.m.stop_child = Mock()
+        self.m.spawn = Mock(side_effect=lambda *args: self.m.tunnel_invalid.set())
+        self.m.probe = Mock()
+        with self.assertRaisesRegex(RuntimeError, "隧道未通过"):
+            self.m.rebuild()
+        self.m.probe.assert_not_called()
+
+    def test_public_health_still_checked_while_hook_retry_waits(self):
+        self.running_manager()
+        self.m.phase = "configuring"
+        self.m.hooks_pending = True
+        self.m.next_hook = time.monotonic() + 60
+        self.m.probe.side_effect = lambda url: url == self.m.local_url()
+        self.m.configure_hooks = Mock()
+        for _ in range(3):
+            self.m.last_probe = 0
+            self.m.tick()
+        self.m.rebuild.assert_called_once()
+        self.m.configure_hooks.assert_not_called()
+
+    def test_cancelled_hook_sync_cannot_mark_running(self):
+        self.m.phase = "configuring"
+        self.m.hooks_pending = True
+        self.m.command = ("stop", {})
+        self.m.gh = Mock()
+        self.m.sync_hooks()
+        self.assertTrue(self.m.hooks_pending)
+        self.assertEqual(self.m.phase, "configuring")
+        self.m.gh.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -63,7 +63,9 @@ GUI 提供启停、重启、重建隧道、检查漏审、手动重审、配置�
 
 恢复机制：
 
-- 每 30 秒向公网入口发送带 HMAC 签名的 ping，验证响应确实来自 reviewer。连续三次失败或 cloudflared 退出时，只重建隧道、更新受管 webhook，正在执行的审查保持运行。
+- 每 30 秒分别向本地 reviewer 和公网入口发送带 HMAC 签名的 ping。仅公网连续三次失败、cloudflared 退出，或当前隧道输出 `Unauthorized: Tunnel not found` 时，只重建隧道，正在执行的审查保持运行。旧隧道进程的迟到输出不会影响新隧道。
+- 新入口通过签名探测后，更新受管 webhook 并回读 URL、启用状态和订阅事件，全部一致才显示运行中。GitHub API 失败时保留健康的隧道和 reviewer，以 2–60 秒指数退避重试 webhook 同步，避免反复换域名。
+- 本地签名探测连续三次失败时，重启本管理器持有的 reviewer 和隧道；本地故障期间不反复重建公网入口。启动超时会先清理未就绪的 reviewer，再退避重试。
 - reviewer 进程退出时自动重启，失败重试指数退避，最长 60 秒。关闭服务会取消自动重启。旧启动器占用 reviewer 端口时拒绝启动，不接管其进程。
 - 恢复后以及每 60 秒，分页检查 GitHub 保留的失败投递。跳过已成功的同 GUID、过期 head、关闭或草稿 PR、未提及触发用户的评论和机器人自己的评论。每个失败 GUID 最多请求补送三次，间隔至少两分钟。
 - 同时检查白名单仓库中未审查的 open PR 当前 head，用签名本地事件补齐，因此旧投递已超出 GitHub 保留期时仍能发现漏审。所有任务仍经过单 worker、32 长度队列和 SHA 去重，满队列下一轮再补。
@@ -72,6 +74,10 @@ GUI 提供启停、重启、重建隧道、检查漏审、手动重审、配置�
 `data_dir/activity.json` 保存最近 256 次尝试的排队、运行、完成、失败及中断状态；只有 `gh pr comment` 成功才标记「已发布」，并保存返回的评论链接。旧版 `reviews.json` 中只有会话和 SHA，GUI 不会把它推断为审查成功。日志只保留当前管理器最近 400 行，并过滤已知凭据。
 
 「停止服务」会关闭 manager 自己启动的 reviewer（含进程内 LuckyAgent）和隧道，GUI 仍可使用。终端 `Ctrl+C` 或向 `ops/start.py` 进程发送 `SIGTERM` 则会同时关闭管理器和子进程。`--start` 可以在打开 GUI 时启动服务，`--port` 可修改管理端口。要在登录后启动，可让自己的 launchd 服务运行此脚本；不要同时保留原 `~/.mojoreviewer/ops/start.py` 启动器。
+
+从旧启动器迁移时，先将其 `webhook.json` 中已管理的仓库和 ID 填入 `manager.hooks`，保留原 reviewer 配置、数据目录和两个 GitHub 账户。等待活动审查结束后停用旧 launchd job，再将其启动命令改为本管理器的 `python3 -u ops/start.py --root <配置所在仓库> --binary <reviewer 二进制> --start`。保留原网络代理环境，设置 `RunAtLoad=true`、`KeepAlive=true`、`ThrottleInterval=30`，并在替换前备份 plist 和配置。部署脚本与 `ops/web/` 应来自同一版本，放在不会被清理的目录。仅合并代码不会自动替换已安装的旧启动器。
+
+macOS 的 python.org 安装若缺少默认 OpenSSL CA 路径，公网探测会使用 `/etc/ssl/cert.pem` 系统证书包；仍校验服务器证书和主机名。已有默认 CA 或显式设置 `SSL_CERT_FILE` / `SSL_CERT_DIR` 时保持原配置。迁移后应验证本地及公网签名 ping、GitHub webhook 回读，并在空闲时测试一次隧道进程退出后的自动恢复。
 
 管理配置片段（合并到现有配置，不包含密钥）：
 
