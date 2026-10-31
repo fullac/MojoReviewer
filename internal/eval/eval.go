@@ -61,6 +61,10 @@ type Report struct {
 	Scores        Scores   `json:"scores"`
 }
 
+type Options struct {
+	DisableManifest bool
+}
+
 type Runner interface {
 	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
 }
@@ -135,10 +139,14 @@ func localGit(dir string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), err
 }
 
-func Run(ctx context.Context, cases []Case, dataDir string, runner Runner) Report {
+func Run(ctx context.Context, cases []Case, dataDir string, runner Runner, options ...Options) Report {
+	var opts Options
+	if len(options) > 0 {
+		opts = options[0]
+	}
 	report := Report{SchemaVersion: 1, Matching: "path + inclusive line range; one-to-one maximum matching; hallucination_rate = unmatched predictions / predictions (location proxy, not semantic verification)", Cases: []Result{}}
 	for _, c := range cases {
-		result := runCase(ctx, c, dataDir, runner)
+		result := runCase(ctx, c, dataDir, runner, opts)
 		report.Cases = append(report.Cases, result)
 		if result.Scores != nil {
 			report.Completed++
@@ -153,7 +161,7 @@ func Run(ctx context.Context, cases []Case, dataDir string, runner Runner) Repor
 	return report
 }
 
-func runCase(ctx context.Context, c Case, dataDir string, runner Runner) Result {
+func runCase(ctx context.Context, c Case, dataDir string, runner Runner, opts Options) Result {
 	ctx, metrics := observe.Start(ctx)
 	result := Result{ID: c.ID, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA, State: "failed"}
 	done := observe.Stage(ctx, "checkout")
@@ -164,7 +172,13 @@ func runCase(ctx context.Context, c Case, dataDir string, runner Runner) Result 
 		result.Metrics = metrics.Snapshot()
 		return result
 	}
-	reviewed, err := runner.Review(ctx, agent.ReviewInput{Review: github.Review{Repo: "eval/local", Number: 1, SessionKey: "eval/" + c.ID, Title: c.Title, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA}, WorkDir: ws.Dir})
+	var manifest *review.Manifest
+	if !opts.DisableManifest {
+		done := observe.Stage(ctx, "manifest")
+		manifest, _ = review.BuildManifest(ctx, ws.Dir)
+		done()
+	}
+	reviewed, err := runner.Review(ctx, agent.ReviewInput{Review: github.Review{Repo: "eval/local", Number: 1, SessionKey: "eval/" + c.ID, Title: c.Title, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA}, WorkDir: ws.Dir, Manifest: manifest})
 	result.Metrics = metrics.Snapshot()
 	if err != nil {
 		result.Reason = "model"

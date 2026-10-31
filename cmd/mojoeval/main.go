@@ -22,6 +22,7 @@ func run() int {
 	casesPath := flag.String("cases", "", "本地样本 JSON 文件")
 	cfgPath := flag.String("config", config.ConfigPath, "模型配置 JSON 文件")
 	output := flag.String("output", "", "评测报告 JSON 文件（必填）")
+	manifest := flag.Bool("manifest", true, "启用宿主改动清单；false 用于对照回放")
 	flag.Parse()
 	if *casesPath == "" || *output == "" {
 		fmt.Fprintln(os.Stderr, "需要 -cases 和 -output")
@@ -50,7 +51,7 @@ func run() int {
 	defer runner.Close()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	report := eval.Run(ctx, cases, home, runner)
+	report := eval.Run(ctx, cases, home, runner, eval.Options{DisableManifest: !*manifest})
 	raw, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return 2

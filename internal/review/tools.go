@@ -349,6 +349,10 @@ func changedLines(dir, rel string) ([][2]int, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parseChangedLines(out), nil
+}
+
+func parseChangedLines(out string) [][2]int {
 	var hunks [][2]int
 	for _, line := range strings.Split(out, "\n") {
 		if !strings.HasPrefix(line, "@@") {
@@ -379,7 +383,7 @@ func changedLines(dir, rel string) ([][2]int, error) {
 		}
 		hunks = append(hunks, [2]int{start, start + count - 1})
 	}
-	return hunks, nil
+	return hunks
 }
 
 func symbolsIn(abs, rel string, hunks [][2]int) []string {

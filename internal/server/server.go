@@ -250,6 +250,12 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		s.postFailure(ctx, item, "准备仓库失败", err)
 		return
 	}
+	manifestDone := observe.Stage(ctx, "manifest")
+	manifest, manifestErr := review.BuildManifest(ctx, ws.Dir)
+	manifestDone()
+	if manifestErr != nil {
+		slog.Warn("改动清单不可用，使用分页工具", "pr", item.SessionKey)
+	}
 	existing, _ := s.store.Get(item.SessionKey)
 	activity.Stage = "model"
 	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
@@ -257,6 +263,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
+		Manifest:  manifest,
 	})
 	storageFailed := false
 	if result.SessionID != "" {

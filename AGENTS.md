@@ -65,7 +65,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 2. `pull_request` 只收 `opened`、`reopened`、`synchronize`、`ready_for_review`，草稿丢弃。`issue_comment` 只收 PR 上新建的、完整提到 `github.trigger_user` 的评论；更长账号和邮箱片段不匹配。
 3. `github.repos` 非空时，仓库不在名单里就忽略。
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
-5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
+5. 提示词**不**预置整份 diff。宿主先生成有界 `change_manifest`（文件、增删行、风险排序、符号和测试）并作为不可信 JSON 注入；文件列表缺失时模型用 `pr_diff_stat` 分页补齐，再用 `pr_file_diff` 按文件读取。清单失败退回原有工具流程，风险分不代表缺陷判断。
 6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
 7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
 8. `review.PostComment` 发回 PR。

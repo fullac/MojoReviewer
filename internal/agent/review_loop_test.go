@@ -19,6 +19,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/observe"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 )
 
 func TestManagedReviewLoop(t *testing.T) {
@@ -130,6 +131,9 @@ func TestManagedReviewLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := ReviewInput{WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"}}
+			if tc.name == "notes_then_finish" {
+				input.Manifest = &review.Manifest{TotalFiles: 1, Complete: true, Files: []review.ChangedFile{{Path: "a.go", Added: 1}}}
+			}
 			ctx, metrics := observe.Start(context.Background())
 			var result ReviewResult
 			if tc.fix {
