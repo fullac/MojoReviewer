@@ -103,6 +103,7 @@ type ReviewInput struct {
 // ReviewResult 是模型结论和可复用的会话 ID。
 // 只读审查 Text 始终由宿主渲染，零笔记也不采用模型自由文本。
 type ReviewResult struct {
+	Notes     []review.Note
 	SessionID string
 	Text      string
 	Noted     bool

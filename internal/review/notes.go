@@ -139,3 +139,13 @@ func escapeNoteTitle(title string) string {
 	}
 	return b.String()
 }
+
+// Snapshot 返回结构化笔记副本，供宿主评测和后续校验使用。
+func (n *Notes) Snapshot() []Note {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]Note{}, n.items...)
+}
