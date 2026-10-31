@@ -18,6 +18,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
@@ -46,6 +47,8 @@ func TestRenderedReviewCommentCannotTriggerWebhook(t *testing.T) {
 }
 
 type recordingRunner struct {
+	memoryInputs []agent.ReviewInput
+	memoryResult projectmem.ContextBundle
 	inputs       []agent.ReviewInput
 	fixInputs    []agent.ReviewInput
 	remembers    []string
@@ -492,4 +495,9 @@ func TestFixAuthorAllowedHelper(t *testing.T) {
 	if fixAuthorAllowed([]string{"ada"}, "bob") {
 		t.Fatal("未授权应拒绝")
 	}
+}
+
+func (r *recordingRunner) PrepareMemory(_ context.Context, input agent.ReviewInput) projectmem.ContextBundle {
+	r.memoryInputs = append(r.memoryInputs, input)
+	return r.memoryResult
 }

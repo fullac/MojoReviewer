@@ -66,7 +66,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 3. `github.repos` 非空时，仓库不在名单里就忽略。
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff。宿主先生成有界 `change_manifest`（文件、增删行、风险排序、符号和测试）并作为不可信 JSON 注入；文件列表缺失时模型用 `pr_diff_stat` 分页补齐，再用 `pr_file_diff` 按文件读取。清单失败退回原有工具流程，风险分不代表缺陷判断。
-6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
+6. 宿主在模型超时窗口之外调用 `runner.PrepareMemory`：独立 30 秒预算，`projectmem` 按仓库和 head 缓存成功索引，以改动路径/符号增强召回，片段通过 `ReviewInput.Memory` 注入。索引失败只记分类日志，不阻断审查。
 7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
 8. `review.PostComment` 发回 PR。
 
@@ -74,7 +74,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 1. 评论解析为 `IntentFix`，且 `agent.fix_enabled`。
 2. `fix_allowed_authors` 非空时校验 `item.Author`。
-3. 与审查相同方式 `PrepareWithBase` + 项目记忆。
+3. 与审查相同方式 `PrepareWithBase` + 改动清单 + 宿主 `PrepareMemory`；记忆准备不占模型超时窗口。
 4. `runner.Fix`：fix 工具白名单 + 会话 cwd 钉在检出。
 5. `review.PublishFix`：敏感路径 / 体量门禁 → 可选 commit/push 到 head。
 6. 评论回报 fix 结果与 publish 摘要；成功 push 时更新 `reviews.json` 的 head SHA。

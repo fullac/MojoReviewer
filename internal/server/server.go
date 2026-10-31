@@ -15,11 +15,13 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/observe"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
 type reviewRunner interface {
+	PrepareMemory(context.Context, agent.ReviewInput) projectmem.ContextBundle
 	Review(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
 	Fix(context.Context, agent.ReviewInput) (agent.ReviewResult, error)
 	RememberProject(content string) error
@@ -257,14 +259,17 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		slog.Warn("改动清单不可用，使用分页工具", "pr", item.SessionKey)
 	}
 	existing, _ := s.store.Get(item.SessionKey)
-	activity.Stage = "model"
 	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
-	result, err := s.runner.Review(ctx, agent.ReviewInput{
+	input := agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
 		Manifest:  manifest,
-	})
+	}
+	activity.Stage = "memory"
+	input.Memory = s.runner.PrepareMemory(ctx, input)
+	activity.Stage = "model"
+	result, err := s.runner.Review(ctx, input)
 	storageFailed := false
 	if result.SessionID != "" {
 		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {
@@ -308,14 +313,24 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 		s.postFailure(ctx, item, "准备仓库失败", err)
 		return
 	}
+	manifestDone := observe.Stage(ctx, "manifest")
+	manifest, manifestErr := review.BuildManifest(ctx, ws.Dir)
+	manifestDone()
+	if manifestErr != nil {
+		slog.Warn("改动清单不可用，使用分页工具", "pr", item.SessionKey)
+	}
 	existing, _ := s.store.Get(item.SessionKey)
-	a.Stage = "model"
 	// Diff is intentionally empty: the model pulls tools instead of a pinned bulk patch (issue #21).
-	result, err := s.runner.Fix(ctx, agent.ReviewInput{
+	input := agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
-	})
+		Manifest:  manifest,
+	}
+	a.Stage = "memory"
+	input.Memory = s.runner.PrepareMemory(ctx, input)
+	a.Stage = "model"
+	result, err := s.runner.Fix(ctx, input)
 	storageFailed := false
 	if result.SessionID != "" {
 		if saveErr := s.store.Put(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, SessionID: result.SessionID}); saveErr != nil {

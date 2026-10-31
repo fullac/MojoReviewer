@@ -23,13 +23,15 @@ type Tool struct {
 }
 
 type Snapshot struct {
-	StartedAt  string           `json:"started_at"`
-	TotalMS    int64            `json:"total_ms"`
-	Stages     map[string]int64 `json:"stages_ms"`
-	Iterations int              `json:"iterations"`
-	Usage      *Usage           `json:"usage"`
-	ToolCount  int              `json:"tool_count"`
-	Tools      []Tool           `json:"tools"`
+	MemoryCacheHit *bool            `json:"memory_cache_hit,omitempty"`
+	MemoryFiles    int              `json:"memory_files"`
+	StartedAt      string           `json:"started_at"`
+	TotalMS        int64            `json:"total_ms"`
+	Stages         map[string]int64 `json:"stages_ms"`
+	Iterations     int              `json:"iterations"`
+	Usage          *Usage           `json:"usage"`
+	ToolCount      int              `json:"tool_count"`
+	Tools          []Tool           `json:"tools"`
 }
 
 type Recorder struct {
@@ -112,6 +114,10 @@ func (r *Recorder) Snapshot() *Snapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := r.data
+	if r.data.MemoryCacheHit != nil {
+		hit := *r.data.MemoryCacheHit
+		out.MemoryCacheHit = &hit
+	}
 	out.TotalMS = time.Since(r.started).Milliseconds()
 	out.Stages = make(map[string]int64, len(r.data.Stages))
 	for k, v := range r.data.Stages {
@@ -123,4 +129,14 @@ func (r *Recorder) Snapshot() *Snapshot {
 		out.Usage = &u
 	}
 	return &out
+}
+
+func (r *Recorder) Memory(hit bool, files int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.data.MemoryCacheHit = &hit
+	r.data.MemoryFiles = files
 }

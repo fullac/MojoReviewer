@@ -2,87 +2,101 @@ package projectmem
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/yurika0211/luckyagent-app/sdk"
 )
 
 // Indexer 把仓库高信号文档写入 LuckyAgent 隔离家目录里的 RAG / 记忆。
 type Indexer struct {
-	Agent        *sdk.Agent
+	Agent        Backend
 	Store        *Store
 	MaxFiles     int
 	MaxFileBytes int
 }
 
-// Ensure 在审查前做增量索引。失败只记日志，不阻断审查。
-func (idx *Indexer) Ensure(ctx context.Context, repo, workDir, headSHA string) {
+// Backend 是项目记忆使用的公开 SDK 接口，便于离线验证缓存和失败路径。
+type Backend interface {
+	IndexText(context.Context, string, string, string) (*sdk.DocumentInfo, error)
+	RememberLongTerm(string, string) error
+	Recall(string) []sdk.MemoryHit
+	SearchRAG(context.Context, string, *sdk.RAGSearchOptions) ([]sdk.RAGHit, error)
+}
+
+type IndexResult struct {
+	CacheHit bool
+	Files    int
+}
+
+// Ensure 只在索引和元数据都成功后缓存 head；错误交给宿主归类记录，不阻断审查。
+func (idx *Indexer) Ensure(ctx context.Context, repo, workDir, headSHA string) (IndexResult, error) {
 	if idx == nil || idx.Agent == nil || idx.Store == nil {
-		return
-	}
-	repo = strings.TrimSpace(repo)
-	workDir = strings.TrimSpace(workDir)
-	if repo == "" || workDir == "" {
-		return
+		return IndexResult{}, nil
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := idx.ensure(ctx, repo, workDir, headSHA); err != nil {
-		log.Printf("项目记忆索引跳过 %s: %v", repo, err)
+	repo = strings.ToLower(strings.TrimSpace(repo))
+	if repo == "" || strings.TrimSpace(workDir) == "" {
+		return IndexResult{}, fmt.Errorf("项目记忆输入为空")
 	}
-}
-
-func (idx *Indexer) ensure(ctx context.Context, repo, workDir, headSHA string) error {
-	cands, err := SelectKnowledgeFiles(workDir, idx.MaxFiles, idx.MaxFileBytes)
-	if err != nil {
-		return err
+	if err := ctx.Err(); err != nil {
+		return IndexResult{}, err
 	}
 	prev, _ := idx.Store.Get(repo)
-	if prev.Indexed == nil {
-		prev.Indexed = map[string]FileState{}
+	if headSHA != "" && prev.HeadSHA == headSHA && prev.Version == 1 {
+		return IndexResult{CacheHit: true, Files: len(prev.Indexed)}, nil
 	}
-	next := RepoState{
-		Repo:       repo,
-		HeadSHA:    headSHA,
-		Indexed:    map[string]FileState{},
-		SummaryKey: prev.SummaryKey,
+	cands, err := SelectKnowledgeFiles(workDir, idx.MaxFiles, idx.MaxFileBytes)
+	if err != nil {
+		return IndexResult{}, err
 	}
+	next := RepoState{Repo: repo, HeadSHA: headSHA, Version: 1, Indexed: map[string]FileState{}, SummaryKey: prev.SummaryKey}
 	changed := 0
 	for _, c := range cands {
-		// Revalidate immediately before reading; selection alone must not let
-		// a subsequently replaced symlink point the indexer outside this checkout.
+		if err := ctx.Err(); err != nil {
+			return IndexResult{}, err
+		}
 		abs, info, err := resolveKnowledgeFile(workDir, c.Rel)
 		if err != nil {
-			continue
-		}
-		st := FileState{Size: info.Size(), ModTime: info.ModTime().UTC()}
-		next.Indexed[c.Rel] = st
-		if old, ok := prev.Indexed[c.Rel]; ok && old.equalish(st) {
-			continue
+			return IndexResult{}, fmt.Errorf("知识文件路径变化")
 		}
 		raw, err := os.ReadFile(abs)
 		if err != nil {
-			return fmt.Errorf("读 %s: %w", c.Rel, err)
+			return IndexResult{}, err
 		}
-		source := ragSource(repo, c.Rel)
-		if _, err := idx.Agent.IndexText(ctx, source, c.Rel, string(raw)); err != nil {
-			return fmt.Errorf("索引 %s: %w", c.Rel, err)
+		st := FileState{Size: info.Size(), ModTime: info.ModTime().UTC(), Hash: fmt.Sprintf("%x", sha256.Sum256(raw))}
+		next.Indexed[c.Rel] = st
+		if old, ok := prev.Indexed[c.Rel]; ok && old.Hash == st.Hash {
+			continue
+		}
+		if _, err := idx.Agent.IndexText(ctx, ragSource(repo, c.Rel), c.Rel, string(raw)); err != nil {
+			return IndexResult{}, err
 		}
 		changed++
 	}
-	writeSummary := prev.SummaryKey == "" || changed > 0
+	if err := ctx.Err(); err != nil {
+		return IndexResult{}, err
+	}
+	writeSummary := prev.SummaryKey == "" || changed > 0 || len(prev.Indexed) != len(next.Indexed)
 	if err := idx.rememberSummary(repo, headSHA, cands, writeSummary); err != nil {
-		log.Printf("项目记忆摘要写入失败 %s: %v", repo, err)
-	} else if writeSummary {
+		return IndexResult{}, err
+	}
+	if writeSummary {
 		next.SummaryKey = summaryStateKey(repo)
 	}
-	return idx.Store.Put(repo, next)
+	if err := ctx.Err(); err != nil {
+		return IndexResult{}, err
+	}
+	if err := idx.Store.Put(repo, next); err != nil {
+		return IndexResult{}, err
+	}
+	return IndexResult{Files: len(next.Indexed)}, nil
 }
 
 func (idx *Indexer) rememberSummary(repo, headSHA string, cands []Candidate, write bool) error {
@@ -115,20 +129,26 @@ type ContextBundle struct {
 }
 
 // LoadContext 在审查前提取与本次 PR 相关的记忆和 RAG 片段。失败返回空包。
-// query 只用 repo + title + 短评论，不用完整 body，避免召回历史审查 prompt（issue #21）。
-func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment string) ContextBundle {
+// 查询包含仓库、短标题/评论、改动路径和符号；不用完整 body 或补丁。
+func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment string, changes ...string) ContextBundle {
 	out := ContextBundle{}
 	if idx == nil || idx.Agent == nil {
 		return out
 	}
-	repo = strings.TrimSpace(repo)
+	repo = strings.ToLower(strings.TrimSpace(repo))
 	title = strings.TrimSpace(title)
 	comment = strings.TrimSpace(comment)
 	// body 保留参数兼容调用方，但不进 query，也不整段注入。
 	_ = body
-	query := strings.TrimSpace(strings.Join([]string{repo, title, clipQuery(comment, 200)}, " "))
+	query := buildQuery(repo, title, comment, changes)
 	if query == "" {
 		query = repo
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return out
 	}
 	for _, hit := range idx.Agent.Recall(query) {
 		text := strings.TrimSpace(hit.Content)
@@ -140,15 +160,19 @@ func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment 
 			break
 		}
 	}
-	if ctx == nil {
-		ctx = context.Background()
+
+	if ctx.Err() != nil {
+		return out
 	}
-	hits, err := idx.Agent.SearchRAG(ctx, query, &sdk.RAGSearchOptions{TopK: maxRenderRAGHits, MinScore: 0.15})
+	hits, err := idx.Agent.SearchRAG(ctx, query, &sdk.RAGSearchOptions{TopK: maxRenderRAGHits * 4, MinScore: 0.15})
 	if err != nil {
-		log.Printf("项目记忆 RAG 检索跳过 %s: %v", repo, err)
+		log.Printf("项目记忆检索失败，继续审查 repo=%s", repo)
 		return out
 	}
 	for _, hit := range hits {
+		if !strings.HasPrefix(hit.DocSource, ragSource(repo, "")) {
+			continue
+		}
 		content := strings.TrimSpace(hit.Content)
 		if content == "" || looksLikeReviewPrompt(content) {
 			continue
@@ -157,8 +181,8 @@ func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment 
 		if label == "" {
 			label = hit.DocSource
 		}
-		if len(content) > maxMemoryChars {
-			content = content[:maxMemoryChars] + "…"
+		if len([]rune(content)) > maxMemoryChars {
+			content = clipQuery(content, maxMemoryChars) + "…"
 		}
 		if label != "" {
 			out.RAGHits = append(out.RAGHits, fmt.Sprintf("[%s] %s", label, content))
@@ -174,10 +198,27 @@ func (idx *Indexer) LoadContext(ctx context.Context, repo, title, body, comment 
 
 func clipQuery(s string, n int) string {
 	s = strings.TrimSpace(s)
-	if n <= 0 || len(s) <= n {
+	runes := []rune(s)
+	if n <= 0 || len(runes) <= n {
 		return s
 	}
-	return s[:n]
+	return string(runes[:n])
+}
+
+func buildQuery(repo, title, comment string, changes []string) string {
+	parts := []string{clipQuery(repo, 200), clipQuery(title, 200), clipQuery(comment, 200)}
+	seen := map[string]bool{}
+	for _, term := range changes {
+		if len(parts) >= 35 {
+			break
+		}
+		term = clipQuery(term, 120)
+		if term != "" && !seen[term] {
+			parts = append(parts, term)
+			seen[term] = true
+		}
+	}
+	return clipQuery(strings.Join(parts, " "), 1200)
 }
 
 func ragSource(repo, rel string) string {
@@ -194,15 +235,4 @@ func shortSHA(sha string) string {
 		return sha[:12]
 	}
 	return sha
-}
-
-func (a FileState) equalish(b FileState) bool {
-	if a.Size != b.Size {
-		return false
-	}
-	d := a.ModTime.Sub(b.ModTime)
-	if d < 0 {
-		d = -d
-	}
-	return d <= time.Second
 }

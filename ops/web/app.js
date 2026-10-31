@@ -46,6 +46,11 @@ function renderMetrics(td, item) {
     line.textContent=label+'：'+(Object.hasOwn(m.stages_ms||{},key)?(m.stages_ms[key]/1000).toFixed(3)+' 秒':'未执行');
     details.append(line);
   }
+  if(typeof m.memory_cache_hit==='boolean'){
+    const line=document.createElement('div');
+    line.textContent='记忆索引：'+(m.memory_cache_hit?'命中提交缓存':'完成索引检查')+' · '+m.memory_files+' 个文档';
+    details.append(line);
+  }
   if(m.usage){
     const line=document.createElement('div');
     line.textContent='输入 '+m.usage.input_tokens+' / 输出 '+m.usage.output_tokens+' / 缓存命中 '+m.usage.cached_input_tokens;

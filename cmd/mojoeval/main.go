@@ -14,6 +14,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/eval"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 )
 
 func main() { os.Exit(run()) }
@@ -23,6 +24,7 @@ func run() int {
 	cfgPath := flag.String("config", config.ConfigPath, "模型配置 JSON 文件")
 	output := flag.String("output", "", "评测报告 JSON 文件（必填）")
 	manifest := flag.Bool("manifest", true, "启用宿主改动清单；false 用于对照回放")
+	memory := flag.Bool("memory", false, "启用独立临时项目记忆，默认关闭以便对照")
 	flag.Parse()
 	if *casesPath == "" || *output == "" {
 		fmt.Fprintln(os.Stderr, "需要 -cases 和 -output")
@@ -49,9 +51,17 @@ func run() int {
 		return 2
 	}
 	defer runner.Close()
+	if *memory {
+		st, err := projectmem.Open(filepath.Join(home, "project_memory.json"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "无法初始化评测记忆")
+			return 2
+		}
+		runner.AttachProjectMemory(st)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	report := eval.Run(ctx, cases, home, runner, eval.Options{DisableManifest: !*manifest})
+	report := eval.Run(ctx, cases, home, runner, eval.Options{DisableManifest: !*manifest, Memory: *memory})
 	raw, err := json.MarshalIndent(report, "", "  ")
 	if err != nil {
 		return 2

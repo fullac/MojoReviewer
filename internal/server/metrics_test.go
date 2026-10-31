@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
@@ -40,6 +41,31 @@ func TestAttemptMetricsPersistOnSuccessAndFailure(t *testing.T) {
 				if _, ok := rows[0].Metrics.Stages[phase]; !ok {
 					t.Fatalf("missing phase %s: %s", phase, raw)
 				}
+			}
+		})
+	}
+}
+
+func TestHostPreparesMemoryForReviewAndFix(t *testing.T) {
+	for _, fix := range []bool{false, true} {
+		t.Run(map[bool]string{false: "review", true: "fix"}[fix], func(t *testing.T) {
+			s, r, _, _ := testServer(t, "", "")
+			r.memoryResult = projectmem.ContextBundle{Memories: []string{"prepared"}}
+			item := localReviewItem(t)
+			if fix {
+				s.runFix(context.Background(), item, &store.Activity{})
+			} else {
+				s.runOne(context.Background(), item)
+			}
+			if len(r.memoryInputs) != 1 || r.memoryInputs[0].Manifest == nil {
+				t.Fatal("host did not prepare memory with manifest")
+			}
+			inputs := r.inputs
+			if fix {
+				inputs = r.fixInputs
+			}
+			if len(inputs) != 1 || len(inputs[0].Memory.Memories) != 1 || inputs[0].Memory.Memories[0] != "prepared" {
+				t.Fatal("prepared memory not passed to model")
 			}
 		})
 	}

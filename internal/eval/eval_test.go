@@ -17,6 +17,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 )
 
@@ -153,5 +154,36 @@ func TestFailedCasesExcludedAndRedacted(t *testing.T) {
 	raw, _ := json.Marshal(report)
 	if report.Completed != 0 || report.Failed != 1 || report.Cases[0].Scores != nil || strings.Contains(string(raw), "private") {
 		t.Fatalf("wrong failure accounting: %s", raw)
+	}
+}
+
+type preparedRunner struct {
+	prepared bool
+	received bool
+}
+
+func (r *preparedRunner) PrepareMemory(_ context.Context, input agent.ReviewInput) projectmem.ContextBundle {
+	r.prepared = true
+	return projectmem.ContextBundle{Memories: []string{"prepared"}}
+}
+func (r *preparedRunner) Review(_ context.Context, input agent.ReviewInput) (agent.ReviewResult, error) {
+	r.received = r.prepared && len(input.Memory.Memories) == 1
+	return agent.ReviewResult{}, nil
+}
+func TestReplayMemoryAblation(t *testing.T) {
+	root, c := fixture(t)
+	runner := &preparedRunner{}
+	opts := Options{DisableManifest: true, Memory: true}
+	report := Run(context.Background(), []Case{c}, filepath.Join(root, "run"), runner, opts)
+	if !runner.received || report.Options != opts || report.Failed != 0 {
+		t.Fatal("memory preparation/options lost")
+	}
+	if _, exists := report.Cases[0].Metrics.Stages["manifest"]; exists {
+		t.Fatal("disabled manifest still ran")
+	}
+	runner = &preparedRunner{}
+	Run(context.Background(), []Case{c}, filepath.Join(root, "without-memory"), runner)
+	if runner.prepared {
+		t.Fatal("disabled memory still ran")
 	}
 }

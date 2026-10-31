@@ -136,12 +136,6 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err := setSessionWorkingDir(r.agent, sessionID, input.WorkDir); err != nil {
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
 	}
-	if r.memory != nil {
-		memoryDone := observe.Stage(ctx, "memory")
-		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
-		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
-		memoryDone()
-	}
 	notes := &review.Notes{}
 	reads := &readProgress{}
 	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads); err != nil {
@@ -215,12 +209,6 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 	}
 	if err := setSessionWorkingDir(r.agent, sessionID, input.WorkDir); err != nil {
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置修复工作目录: %w", err)
-	}
-	if r.memory != nil {
-		memoryDone := observe.Stage(ctx, "memory")
-		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
-		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
-		memoryDone()
 	}
 	notes := &review.Notes{}
 	// fix 工具可写文件，不能复用只读审查的读取去重记录。

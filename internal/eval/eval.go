@@ -3,6 +3,7 @@ package eval
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/observe"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 )
 
@@ -53,6 +55,7 @@ type Result struct {
 }
 
 type Report struct {
+	Options       Options  `json:"options"`
 	SchemaVersion int      `json:"schema_version"`
 	Matching      string   `json:"matching"`
 	Cases         []Result `json:"cases"`
@@ -62,7 +65,8 @@ type Report struct {
 }
 
 type Options struct {
-	DisableManifest bool
+	Memory          bool `json:"memory"`
+	DisableManifest bool `json:"disable_manifest"`
 }
 
 type Runner interface {
@@ -144,7 +148,7 @@ func Run(ctx context.Context, cases []Case, dataDir string, runner Runner, optio
 	if len(options) > 0 {
 		opts = options[0]
 	}
-	report := Report{SchemaVersion: 1, Matching: "path + inclusive line range; one-to-one maximum matching; hallucination_rate = unmatched predictions / predictions (location proxy, not semantic verification)", Cases: []Result{}}
+	report := Report{Options: opts, SchemaVersion: 1, Matching: "path + inclusive line range; one-to-one maximum matching; hallucination_rate = unmatched predictions / predictions (location proxy, not semantic verification)", Cases: []Result{}}
 	for _, c := range cases {
 		result := runCase(ctx, c, dataDir, runner, opts)
 		report.Cases = append(report.Cases, result)
@@ -178,7 +182,21 @@ func runCase(ctx context.Context, c Case, dataDir string, runner Runner, opts Op
 		manifest, _ = review.BuildManifest(ctx, ws.Dir)
 		done()
 	}
-	reviewed, err := runner.Review(ctx, agent.ReviewInput{Review: github.Review{Repo: "eval/local", Number: 1, SessionKey: "eval/" + c.ID, Title: c.Title, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA}, WorkDir: ws.Dir, Manifest: manifest})
+	// Separate repository identities even when multiple fixtures share a runtime.
+	repoKey := fmt.Sprintf("eval/%x", sha256.Sum256([]byte(c.Repository)))
+	input := agent.ReviewInput{Review: github.Review{Repo: repoKey, Number: 1, SessionKey: "eval/" + c.ID, Title: c.Title, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA}, WorkDir: ws.Dir, Manifest: manifest}
+	if opts.Memory {
+		preparer, ok := runner.(interface {
+			PrepareMemory(context.Context, agent.ReviewInput) projectmem.ContextBundle
+		})
+		if !ok {
+			result.Reason = "memory_unavailable"
+			result.Metrics = metrics.Snapshot()
+			return result
+		}
+		input.Memory = preparer.PrepareMemory(ctx, input)
+	}
+	reviewed, err := runner.Review(ctx, input)
 	result.Metrics = metrics.Snapshot()
 	if err != nil {
 		result.Reason = "model"
