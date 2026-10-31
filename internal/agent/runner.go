@@ -9,6 +9,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/observe"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	lhagent "github.com/yurika0211/lucky-agent/agent"
@@ -134,8 +135,10 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置审查工作目录: %w", err)
 	}
 	if r.memory != nil {
+		memoryDone := observe.Stage(ctx, "memory")
 		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
 		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
+		memoryDone()
 	}
 	notes := &review.Notes{}
 	reads := &readProgress{}
@@ -152,6 +155,8 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 // runModel uses LH's public loop API because ChatSession falls back to plain
 // chat after loop errors, hiding iteration exhaustion from the publishing host.
 func (r *Runner) runModel(ctx context.Context, sessionID, message string) (string, error) {
+	done := observe.Stage(ctx, "model")
+	defer done()
 	inner := r.agent.Underlying()
 	sess, ok := inner.Sessions().Get(sessionID)
 	if !ok || sess == nil {
@@ -166,6 +171,15 @@ func (r *Runner) runModel(ctx context.Context, sessionID, message string) (strin
 			err = fmt.Errorf("模型执行未返回结果")
 		}
 		return "", err
+	}
+	recorder := observe.From(ctx)
+	var usage *observe.Usage
+	if result.Usage != nil {
+		usage = &observe.Usage{Input: result.Usage.InputTokens, Output: result.Usage.OutputTokens, Total: result.Usage.TotalTokens, Cached: result.Usage.CachedInputTokens}
+	}
+	recorder.Model(result.Iterations, usage)
+	for _, call := range result.ToolCalls {
+		recorder.Tool(call.Name, call.Duration, len(call.Result))
 	}
 	return result.Response, modelExecutionError(result.Response, err)
 }
@@ -201,8 +215,10 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 		return ReviewResult{SessionID: sessionID}, fmt.Errorf("设置修复工作目录: %w", err)
 	}
 	if r.memory != nil {
+		memoryDone := observe.Stage(ctx, "memory")
 		r.memory.Ensure(ctx, input.Review.Repo, input.WorkDir, input.Review.HeadSHA)
 		input.Memory = r.memory.LoadContext(ctx, input.Review.Repo, input.Review.Title, input.Review.Body, input.Review.Comment)
+		memoryDone()
 	}
 	notes := &review.Notes{}
 	// fix 工具可写文件，不能复用只读审查的读取去重记录。

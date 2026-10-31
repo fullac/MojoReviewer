@@ -18,6 +18,7 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/observe"
 )
 
 func TestManagedReviewLoop(t *testing.T) {
@@ -129,11 +130,19 @@ func TestManagedReviewLoop(t *testing.T) {
 				t.Fatal(err)
 			}
 			input := ReviewInput{WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"}}
+			ctx, metrics := observe.Start(context.Background())
 			var result ReviewResult
 			if tc.fix {
-				result, err = runner.Fix(context.Background(), input)
+				result, err = runner.Fix(ctx, input)
 			} else {
-				result, err = runner.Review(context.Background(), input)
+				result, err = runner.Review(ctx, input)
+			}
+			snapshot := metrics.Snapshot()
+			if _, ok := snapshot.Stages["model"]; !ok || snapshot.Iterations == 0 {
+				t.Fatalf("missing model metrics: %+v", snapshot)
+			}
+			if tc.name == "notes_then_finish" && (snapshot.Usage == nil || snapshot.Usage.Total != 24 || snapshot.ToolCount != 1 || snapshot.Tools[0].Name != "review_note") {
+				t.Fatalf("wrong model accounting: %+v", snapshot)
 			}
 			if tc.fix {
 				if !errors.Is(err, errRepeatedToolLoop) || result.Text != "" {
@@ -202,10 +211,10 @@ func writeLoopResponse(w http.ResponseWriter, stream bool, text string, tool map
 		}
 		delete(choice, "message")
 		choice["delta"] = message
-		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{choice}})
+		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{choice}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": "fixture", "choices": []any{choice}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": "fixture", "choices": []any{choice}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
 }

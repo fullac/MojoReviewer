@@ -14,6 +14,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/observe"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
@@ -152,6 +153,7 @@ func (s *Server) worker(ctx context.Context) {
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
+	ctx, metrics := observe.Start(ctx)
 	if item.Intent == "" {
 		item.Intent = github.IntentReview
 	}
@@ -167,6 +169,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	}
 	activity := store.Activity{ID: id, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "running"}
 	defer func() {
+		activity.Metrics = metrics.Snapshot()
 		if activity.State == "running" {
 			activity.State = "failed"
 		}
@@ -207,7 +210,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "metadata"
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
-			s.postFailure(item, "补齐 PR 信息失败", err)
+			s.postFailure(ctx, item, "补齐 PR 信息失败", err)
 			return
 		}
 		// ResolveComment 不改 Intent/Instruction/Comment。
@@ -226,7 +229,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 
 	switch item.Intent {
 	case github.IntentRemember:
-		s.runRemember(item, &activity)
+		s.runRemember(ctx, item, &activity)
 		return
 	case github.IntentFix:
 		if !s.runner.FixEnabled() {
@@ -240,9 +243,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		s.runFix(ctx, item, &activity)
 		return
 	}
+	checkoutDone := observe.Stage(ctx, "checkout")
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	checkoutDone()
 	if err != nil {
-		s.postFailure(item, "准备仓库失败", err)
+		s.postFailure(ctx, item, "准备仓库失败", err)
 		return
 	}
 	existing, _ := s.store.Get(item.SessionKey)
@@ -263,7 +268,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	}
 	if err != nil {
 		slog.Warn("审查未完成，准备发布失败说明", "pr", item.SessionKey, "reason", agent.ModelFailureLog(err))
-		commentURL, postErr := s.postComment(item, reviewFailureComment(result, err))
+		commentURL, postErr := s.postObserved(ctx, item, reviewFailureComment(result, err))
 		if postErr != nil {
 			slog.Error("发布审查失败说明失败", "pr", item.SessionKey, "error", postErr, "review_error", agent.ModelFailureLog(err))
 			return
@@ -275,7 +280,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	if !storageFailed {
 		activity.Stage = "publish"
 	}
-	commentURL, err := s.postComment(item, result.Text)
+	commentURL, err := s.postObserved(ctx, item, result.Text)
 	if err != nil {
 		slog.Error("发布评论失败", "pr", item.SessionKey, "error", err)
 		return
@@ -289,9 +294,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 }
 
 func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activity) {
+	checkoutDone := observe.Stage(ctx, "checkout")
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	checkoutDone()
 	if err != nil {
-		s.postFailure(item, "准备仓库失败", err)
+		s.postFailure(ctx, item, "准备仓库失败", err)
 		return
 	}
 	existing, _ := s.store.Get(item.SessionKey)
@@ -312,7 +319,7 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 	}
 	if err != nil {
 		slog.Error("修复失败", "pr", item.SessionKey, "error", err)
-		s.postFailure(item, "修复失败", err)
+		s.postFailure(ctx, item, "修复失败", err)
 		return
 	}
 	body := result.Text
@@ -322,16 +329,18 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 	if !storageFailed {
 		a.Stage = "publish"
 	}
+	publishDone := observe.Stage(ctx, "publish")
 	pub, pubErr := review.PublishFix(ws.Dir, item.HeadBranch, item.BaseBranch, publishMessage(item, result.Text), review.PublishLimits{
 		MaxChangedFiles: s.cfg.Agent.FixMaxChangedFiles,
 		MaxDiffBytes:    s.cfg.Agent.FixMaxDiffBytes,
 		PushEnabled:     s.cfg.Agent.FixPushEnabled,
 	})
 	body = "fix 结果：\n\n" + body + "\n\n" + pub.Render()
+	publishDone()
 	if pubErr != nil {
 		slog.Error("发布修复提交失败", "pr", item.SessionKey, "error", pubErr)
 		body += "\n\n提交/推送失败：" + publicFailure(pubErr)
-		if commentURL, err := s.postComment(item, body); err != nil {
+		if commentURL, err := s.postObserved(ctx, item, body); err != nil {
 			slog.Error("发布修复评论失败", "pr", item.SessionKey, "error", err)
 		} else {
 			a.CommentURL = commentURL
@@ -345,7 +354,7 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 			slog.Error("保存修复提交记录失败", "pr", item.SessionKey, "error", saveErr)
 		}
 	}
-	commentURL, err := s.postComment(item, body)
+	commentURL, err := s.postObserved(ctx, item, body)
 	if err != nil {
 		slog.Error("发布修复评论失败", "pr", item.SessionKey, "error", err)
 		return
@@ -362,7 +371,7 @@ func publishMessage(item github.Review, _ string) string {
 	return fmt.Sprintf("MojoReviewer fix: apply requested changes for PR #%d", item.Number)
 }
 
-func (s *Server) runRemember(item github.Review, a *store.Activity) {
+func (s *Server) runRemember(ctx context.Context, item github.Review, a *store.Activity) {
 	note := strings.TrimSpace(item.Instruction)
 	if note == "" {
 		if _, err := s.postComment(item, "没有可记住的内容。用法：`@"+strings.TrimPrefix(s.cfg.GitHub.TriggerUser, "@")+" remember <事实>`"); err != nil {
@@ -376,7 +385,7 @@ func (s *Server) runRemember(item github.Review, a *store.Activity) {
 	content := fmt.Sprintf("仓库 %s 的人工补充记忆：%s", item.Repo, note)
 	if err := s.runner.RememberProject(content); err != nil {
 		slog.Error("remember 失败", "pr", item.SessionKey, "error", err)
-		s.postFailure(item, "写入项目记忆失败", err)
+		s.postFailure(ctx, item, "写入项目记忆失败", err)
 		return
 	}
 	if _, err := s.postComment(item, "已记住：\n"+note); err != nil {
@@ -431,9 +440,9 @@ func (s *Server) postComment(item github.Review, body string) (string, error) {
 		s.cfg.Agent.APIKey, s.cfg.GitHub.Token, s.cfg.GitHub.WebhookSecret)
 }
 
-func (s *Server) postFailure(item github.Review, stage string, err error) {
+func (s *Server) postFailure(ctx context.Context, item github.Review, stage string, err error) {
 	slog.Error(stage, "pr", item.SessionKey, "error", err)
-	if _, postErr := s.postComment(item, stage+"："+publicFailure(err)); postErr != nil {
+	if _, postErr := s.postObserved(ctx, item, stage+"："+publicFailure(err)); postErr != nil {
 		slog.Error("发布失败评论失败", "pr", item.SessionKey, "error", postErr)
 	}
 }
@@ -465,4 +474,10 @@ func publicFailure(err error) string {
 	default:
 		return "内部错误，详情见服务日志"
 	}
+}
+
+func (s *Server) postObserved(ctx context.Context, item github.Review, body string) (string, error) {
+	done := observe.Stage(ctx, "publish")
+	defer done()
+	return s.postComment(item, body)
 }

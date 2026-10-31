@@ -194,3 +194,9 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 ## License
 
 MIT。见 [LICENSE](LICENSE)。
+
+## 审查运行观测（#52）
+
+每次尝试结束时，`activity.json` 的 `metrics` 保存总耗时、已执行阶段耗时、模型迭代次数、接口报告的输入/输出/缓存 token 用量及最多 400 条工具轨迹。轨迹仅含已知工具名、耗时、结果字节数，不含参数、正文和原始错误；总调用次数不因截断丢失。token 是模型接口报告的文本用量单位；未报告用量显示“未记录”，不推算为零。
+
+管理台“审查记录 → 运行观测”可展开各阶段和调用序列，成功、失败结果及服务重启后均可查看。阶段包含 checkout（检出）、memory（项目记忆）、manifest（改动清单）、model（模型）、ground（依据校验）、publish（发布）；尚未执行的阶段显示“未执行”。当前记录为尝试结束时的快照，不是逐 token 实时流。#44 的进度事件仍为独立提案，本改动不使用其 `progress/` 文件，合并时保留结构化用量和事件的各自职责。

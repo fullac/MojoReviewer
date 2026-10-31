@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"github.com/mojoreviewer/mojoreviewer/internal/observe"
 	"os"
 	"path/filepath"
 	"time"
@@ -10,14 +11,15 @@ import (
 // Activity is a receipt for one attempt, separate from SHA/session deduplication.
 // It never stores prompts, model output, credentials, or raw errors.
 type Activity struct {
-	ID         string `json:"id"`
-	Repo       string `json:"repo"`
-	Number     int    `json:"number"`
-	HeadSHA    string `json:"head_sha"`
-	State      string `json:"state"`
-	Stage      string `json:"stage,omitempty"`
-	UpdatedAt  string `json:"updated_at"`
-	CommentURL string `json:"comment_url,omitempty"`
+	Metrics    *observe.Snapshot `json:"metrics,omitempty"`
+	ID         string            `json:"id"`
+	Repo       string            `json:"repo"`
+	Number     int               `json:"number"`
+	HeadSHA    string            `json:"head_sha"`
+	State      string            `json:"state"`
+	Stage      string            `json:"stage,omitempty"`
+	UpdatedAt  string            `json:"updated_at"`
+	CommentURL string            `json:"comment_url,omitempty"`
 }
 
 // Activity records queued/running/terminal states in a bounded, atomic snapshot.
