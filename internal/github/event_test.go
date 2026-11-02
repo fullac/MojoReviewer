@@ -91,9 +91,9 @@ func TestParseCommentRequiresMention(t *testing.T) {
 	if err != nil || got == nil || got.Intent != IntentFix || got.Instruction != "改超时" {
 		t.Fatalf("fix 意图解析失败: %+v %v", got, err)
 	}
-	bodyMem := []byte(`{"action":"created","issue":{"number":7,"title":"修复登录","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"body":"@mojo remember 基线用 refs/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web","clone_url":"https://github.com/acme/web.git"}}`)
+	bodyMem := []byte(`{"action":"created","issue":{"number":7,"title":"修复登录","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"body":"@mojo remember 基线用 refs/worktree/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web","clone_url":"https://github.com/acme/web.git"}}`)
 	got, err = ParseWebhook("issue_comment", bodyMem, "mojo", nil)
-	if err != nil || got == nil || got.Intent != IntentRemember || got.Instruction != "基线用 refs/review/base" {
+	if err != nil || got == nil || got.Intent != IntentRemember || got.Instruction != "基线用 refs/worktree/review/base" {
 		t.Fatalf("remember 意图解析失败: %+v %v", got, err)
 	}
 	for _, prefix := range []string{"【MOJORviewer🥕】", "【MojoReviewer】"} {

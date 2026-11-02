@@ -22,7 +22,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	specs := []sdk.ToolSpec{
 		{
 			Name:        "pr_diff_stat",
-			Description: "分页返回 PR 相对 refs/review/merge-base 的文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
+			Description: "分页返回 PR 相对 refs/worktree/review/merge-base 的文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
 			Parameters: map[string]sdk.ToolParam{
 				"offset": {Type: "number", Description: "从第几个文件开始，0-based，默认 0"},
 				"limit":  {Type: "number", Description: "每页文件数，默认 50，最多 200"},
@@ -33,7 +33,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 		},
 		{
 			Name:        "pr_file_diff",
-			Description: "只返回一个文件相对 refs/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
+			Description: "只返回一个文件相对 refs/worktree/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
 			Parameters: map[string]sdk.ToolParam{
 				"path": {Type: "string", Description: "检出内的相对路径", Required: true},
 			},
@@ -75,11 +75,13 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 			Name:        "review_note",
 			Description: "记录一条审查意见。severity 只能是「严重」或「建议」。服务端会把笔记拼成最终 PR 评论，不要在最终回复里另写一份完整评论。",
 			Parameters: map[string]sdk.ToolParam{
-				"severity": {Type: "string", Description: "严重 或 建议", Required: true},
-				"title":    {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
-				"path":     {Type: "string", Description: "相关文件的相对路径，可空；与正文代码位置项一致", Required: false},
-				"line":     {Type: "number", Description: "相关行号，可空；与正文代码位置项一致", Required: false},
-				"body":     {Type: "string", Description: review.NoteBodyRules, Required: true},
+				"finding_id": {Type: "string", Description: "复核历史发现时填 previous_review 中的 id；新增意见留空"},
+				"status":     {Type: "string", Description: "new 新增；persistent 仍存在；resolved 已解决（须已读取当前依据）"},
+				"severity":   {Type: "string", Description: "严重 或 建议", Required: true},
+				"title":      {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
+				"path":       {Type: "string", Description: "相关文件的相对路径，可空；与正文代码位置项一致", Required: false},
+				"line":       {Type: "number", Description: "相关行号，可空；与正文代码位置项一致", Required: false},
+				"body":       {Type: "string", Description: review.NoteBodyRules, Required: true},
 			},
 			Handler:     tools.note,
 			AutoApprove: true,
@@ -148,7 +150,7 @@ func (t reviewTools) symbols(_ map[string]any) (string, error) {
 }
 
 func (t reviewTools) note(args map[string]any) (string, error) {
-	if err := t.notes.AddWithTitle(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "title"), argString(args, "body")); err != nil {
+	if err := t.notes.AddFinding(review.Note{Severity: argString(args, "severity"), Path: argString(args, "path"), Line: argInt(args, "line"), Title: argString(args, "title"), Body: argString(args, "body"), FindingID: argString(args, "finding_id"), Status: argString(args, "status")}); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil

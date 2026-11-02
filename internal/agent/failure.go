@@ -55,7 +55,7 @@ func (f *ReviewFailure) Unwrap() error { return f.cause }
 
 func reviewResult(sessionID, text string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
 	err = modelExecutionError(text, err)
-	result := ReviewResult{SessionID: sessionID}
+	result := ReviewResult{SessionID: sessionID, Notes: notes.Snapshot()}
 	if notes.Len() > 0 {
 		result.Text = notes.Render()
 		result.Noted = true

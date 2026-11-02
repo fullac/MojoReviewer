@@ -1,116 +1,160 @@
+// 为每个仓库维护共享对象缓存，为每个 PR 创建独立 detached 工作目录与比较引用。
 package review
 
 import (
+	"context"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
+	"time"
 )
 
-// Workspace 是一个 PR 的本地只读检出。
-type Workspace struct {
-	Dir string
+type Workspace struct{ Dir string }
+
+// Preparation remains serial even when callers outside the HTTP worker use it.
+var prepareMu sync.Mutex
+var commitID = regexp.MustCompile(`^(?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})$`)
+
+const (
+	baseRef      = "refs/worktree/review/base"
+	mergeBaseRef = "refs/worktree/review/merge-base"
+)
+
+func Prepare(dataDir, repo, cloneURL, sha, sessionKey string) (Workspace, error) {
+	return PrepareWithBase(dataDir, repo, cloneURL, sha, sessionKey, "", "")
+}
+func PrepareWithBase(dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
+	return PrepareWithBaseContext(context.Background(), dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA)
 }
 
-// Prepare 把 PR head 克隆到 dataDir/workspaces 下的稳定目录。
-// 目录已存在时只 fetch 指定 SHA，不切换到别的仓库。
-func Prepare(dataDir string, repo, cloneURL, sha, sessionKey string) (Workspace, error) {
-	return prepare(dataDir, repo, cloneURL, sha, sessionKey, "", "")
-}
-
-// PrepareWithBase 准备 PR head，把 PR base 固定到 refs/review/base，
-// 并把两者的共同祖先固定到 refs/review/merge-base，供所有审查工具比较。
-func PrepareWithBase(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
-	return prepare(dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA)
-}
-
-func prepare(dataDir string, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
-	if strings.TrimSpace(repo) == "" || strings.TrimSpace(sha) == "" {
-		return Workspace{}, fmt.Errorf("仓库或提交为空")
-	}
-	dir := filepath.Join(dataDir, "workspaces", sanitize(sessionKey))
-	gitDir := filepath.Join(dir, ".git")
-	if st, err := os.Stat(gitDir); err == nil && st.IsDir() {
-		if err := git(dir, "fetch", "--depth", "1", "origin", sha); err != nil {
-			return Workspace{}, err
-		}
-		if err := git(dir, "checkout", "--detach", "FETCH_HEAD"); err != nil {
-			return Workspace{}, err
-		}
-		if err := prepareBase(dir, sha, baseBranch, baseSHA); err != nil {
-			return Workspace{}, err
-		}
-		return Workspace{Dir: dir}, nil
-	}
-	if err := os.RemoveAll(dir); err != nil {
-		return Workspace{}, err
-	}
-	if err := os.MkdirAll(filepath.Dir(dir), 0o755); err != nil {
-		return Workspace{}, err
+func PrepareWithBaseContext(ctx context.Context, dataDir, repo, cloneURL, sha, sessionKey, baseBranch, baseSHA string) (Workspace, error) {
+	prepareMu.Lock()
+	defer prepareMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	if strings.TrimSpace(repo) == "" || !commitID.MatchString(sha) || (baseSHA != "" && !commitID.MatchString(baseSHA)) {
+		return Workspace{}, fmt.Errorf("仓库或固定提交无效")
 	}
 	if cloneURL == "" {
 		cloneURL = "https://github.com/" + repo + ".git"
 	}
-	cmd := exec.Command("git", "clone", "--depth", "1", cloneURL, dir)
-	cmd.Env = envWithAskpass()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return Workspace{}, fmt.Errorf("git clone 失败: %w: %s", err, strings.TrimSpace(string(out)))
-	}
-	if err := git(dir, "fetch", "--depth", "1", "origin", sha); err != nil {
+	dataDir, err := filepath.Abs(dataDir)
+	if err != nil {
 		return Workspace{}, err
 	}
-	if err := git(dir, "checkout", "--detach", "FETCH_HEAD"); err != nil {
+	identity := strings.ToLower(repo) + "\x00" + cloneURL
+	cache := filepath.Join(dataDir, "repos", workspaceID(repo, identity)+".git")
+	dir := filepath.Join(dataDir, "workspaces", workspaceID(sessionKey, identity+"\x00"+sessionKey))
+	// Existing legacy clone directories use another name and are left intact,
+	// including unpublished fix work. Never delete them during migration.
+	if _, err := os.Stat(filepath.Join(cache, "HEAD")); os.IsNotExist(err) {
+		if err := os.MkdirAll(cache, 0700); err != nil {
+			return Workspace{}, err
+		}
+		for _, args := range [][]string{{"init", "--bare"}, {"remote", "add", "origin", cloneURL}, {"config", "remote.origin.promisor", "true"}, {"config", "remote.origin.partialclonefilter", "blob:none"}} {
+			if err := prepareGit(ctx, cache, args...); err != nil {
+				return Workspace{}, err
+			}
+		}
+	} else if err != nil {
 		return Workspace{}, err
 	}
-	if err := prepareBase(dir, sha, baseBranch, baseSHA); err != nil {
+	remote, err := gitOutput(cache, "remote", "get-url", "origin")
+	if err != nil || strings.TrimSpace(remote) != cloneURL {
+		return Workspace{}, fmt.Errorf("共享仓库来源不匹配")
+	}
+	existing := false
+	if _, err := os.Lstat(dir); err == nil {
+		common, err := gitOutput(dir, "rev-parse", "--path-format=absolute", "--git-common-dir")
+		if err != nil {
+			return Workspace{}, fmt.Errorf("已有工作目录不是受管理检出")
+		}
+		actual, _ := filepath.EvalSymlinks(strings.TrimSpace(common))
+		expected, _ := filepath.EvalSymlinks(cache)
+		if actual == "" || actual != expected {
+			return Workspace{}, fmt.Errorf("工作目录不属于本仓库缓存")
+		}
+		existing = true
+		for _, ref := range []string{mergeBaseRef, baseRef} {
+			if err := prepareGit(ctx, dir, "update-ref", "-d", ref); err != nil {
+				return Workspace{}, err
+			}
+		}
+		status, err := gitOutput(dir, "status", "--porcelain")
+		if err != nil || strings.TrimSpace(status) != "" {
+			return Workspace{}, fmt.Errorf("工作目录包含未提交改动，已保留，请先处理")
+		}
+	} else if !os.IsNotExist(err) {
 		return Workspace{}, err
+	}
+	args := []string{"fetch", "--no-tags", "--filter=blob:none", "origin", sha}
+	if baseSHA != "" && baseSHA != sha {
+		args = append(args, baseSHA)
+	}
+	if err := prepareGit(ctx, cache, args...); err != nil {
+		return Workspace{}, err
+	}
+	if existing {
+		if err := prepareGit(ctx, dir, "checkout", "--detach", sha); err != nil {
+			return Workspace{}, err
+		}
+	} else {
+		if err := os.MkdirAll(filepath.Dir(dir), 0700); err != nil {
+			return Workspace{}, err
+		}
+		// A failed first checkout may leave a registration. Prune only entries
+		// whose directory is gone; live/dirty working trees are never removed.
+		if err := prepareGit(ctx, cache, "worktree", "prune"); err != nil {
+			return Workspace{}, err
+		}
+		if err := prepareGit(ctx, cache, "worktree", "add", "--detach", dir, sha); err != nil {
+			return Workspace{}, err
+		}
+	}
+	if baseSHA != "" {
+		if err := prepareGit(ctx, dir, "update-ref", baseRef, baseSHA); err != nil {
+			return Workspace{}, err
+		}
+		ancestors, err := manifestGit(ctx, dir, 1024, "merge-base", "--all", baseSHA, sha)
+		if err != nil || len(strings.Fields(ancestors)) != 1 {
+			return Workspace{}, fmt.Errorf("无法确定唯一的 PR 共同祖先")
+		}
+		ancestor := strings.TrimSpace(ancestors)
+		// Download blobs needed by the fixed diff now. Subsequent model tools must
+		// not initiate a fetch through partial-clone lazy loading.
+		cmd := exec.CommandContext(ctx, "git", "-C", dir, "diff", "--no-ext-diff", "--no-textconv", "--binary", ancestor, sha)
+		cmd.Env = envWithAskpass()
+		cmd.Stdout = io.Discard
+		if err := cmd.Run(); err != nil {
+			return Workspace{}, fmt.Errorf("准备差异对象失败")
+		}
+		if err := prepareGit(ctx, dir, "update-ref", mergeBaseRef, ancestor); err != nil {
+			return Workspace{}, err
+		}
 	}
 	return Workspace{Dir: dir}, nil
 }
 
-const (
-	baseRef      = "refs/review/base"
-	mergeBaseRef = "refs/review/merge-base"
-)
+func workspaceID(label, identity string) string {
+	sum := sha256.Sum256([]byte(identity))
+	label = sanitize(label)
+	if len(label) > 80 {
+		label = label[:80]
+	}
+	return fmt.Sprintf("%s-%x", label, sum[:8])
+}
 
-// prepareBase creates a stable base ref and makes the head/base histories
-// available. A depth-1 fetch of two commits is insufficient for merge-base:
-// both commits become shallow boundaries with no common ancestry.
-func prepareBase(dir, headSHA, baseBranch, baseSHA string) error {
-	// Reused workspaces must not retain a previous review's baseline if this
-	// preparation fails or no base was supplied.
-	if err := git(dir, "update-ref", "-d", mergeBaseRef); err != nil {
-		return err
-	}
-	if strings.TrimSpace(baseSHA) == "" {
-		return nil
-	}
-	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", "+"+baseSHA+":"+baseRef); err != nil {
-		return err
-	}
-	if err := git(dir, "fetch", "--no-tags", "--deepen", "2147483647", "origin", headSHA); err != nil {
-		return err
-	}
-	if strings.TrimSpace(baseBranch) != "" {
-		branchRef := "refs/remotes/origin/" + baseBranch
-		if err := git(dir, "check-ref-format", branchRef); err != nil {
-			return fmt.Errorf("base 分支无效: %w", err)
-		}
-		if err := git(dir, "update-ref", branchRef, baseSHA); err != nil {
-			return err
-		}
-	}
-	ancestors, err := gitOutput(dir, "merge-base", "--all", baseRef, "HEAD")
-	if err != nil {
-		return fmt.Errorf("无法确定 PR 共同祖先: %w", err)
-	}
-	bases := strings.Fields(ancestors)
-	if len(bases) != 1 {
-		return fmt.Errorf("无法确定唯一的 PR 共同祖先")
-	}
-	if err := git(dir, "update-ref", mergeBaseRef, bases[0]); err != nil {
-		return err
+func prepareGit(ctx context.Context, dir string, args ...string) error {
+	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	cmd.Env = envWithAskpass()
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("git 准备失败: %w: %s", err, truncate(strings.TrimSpace(string(out)), 300))
 	}
 	return nil
 }

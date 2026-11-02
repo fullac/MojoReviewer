@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -18,6 +19,8 @@ import (
 
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/observe"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 )
 
 func TestManagedReviewLoop(t *testing.T) {
@@ -128,12 +131,28 @@ func TestManagedReviewLoop(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package fixture\n"+strings.Repeat("// fixture\n", 40)), 0600); err != nil {
 				t.Fatal(err)
 			}
+			for _, args := range [][]string{{"init"}, {"config", "user.email", "test@example.test"}, {"config", "user.name", "test"}, {"commit", "--allow-empty", "-m", "base"}, {"update-ref", "refs/worktree/review/merge-base", "HEAD"}, {"add", "."}, {"commit", "-m", "head"}} {
+				if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+					t.Fatalf("git: %v %s", err, out)
+				}
+			}
 			input := ReviewInput{WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"}}
+			if tc.name == "notes_then_finish" {
+				input.Manifest = &review.Manifest{TotalFiles: 1, Complete: true, Files: []review.ChangedFile{{Path: "a.go", Added: 1}}}
+			}
+			ctx, metrics := observe.Start(context.Background())
 			var result ReviewResult
 			if tc.fix {
-				result, err = runner.Fix(context.Background(), input)
+				result, err = runner.Fix(ctx, input)
 			} else {
-				result, err = runner.Review(context.Background(), input)
+				result, err = runner.Review(ctx, input)
+			}
+			snapshot := metrics.Snapshot()
+			if _, ok := snapshot.Stages["model"]; !ok || snapshot.Iterations == 0 {
+				t.Fatalf("missing model metrics: %+v", snapshot)
+			}
+			if tc.name == "notes_then_finish" && (snapshot.Usage == nil || snapshot.Usage.Total != 24 || snapshot.ToolCount != 1 || snapshot.Tools[0].Name != "review_note") {
+				t.Fatalf("wrong model accounting: %+v", snapshot)
 			}
 			if tc.fix {
 				if !errors.Is(err, errRepeatedToolLoop) || result.Text != "" {
@@ -202,10 +221,70 @@ func writeLoopResponse(w http.ResponseWriter, stream bool, text string, tool map
 		}
 		delete(choice, "message")
 		choice["delta"] = message
-		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{choice}})
+		chunk, _ := json.Marshal(map[string]any{"id": "fixture", "choices": []any{choice}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
 		fmt.Fprintf(w, "data: %s\n\ndata: [DONE]\n\n", chunk)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"id": "fixture", "choices": []any{choice}})
+	_ = json.NewEncoder(w).Encode(map[string]any{"id": "fixture", "choices": []any{choice}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
+}
+
+func TestRealRuntimeSerialBatchesAndSameHeadFollowup(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream   bool                             `json:"stream"`
+			Tools    []json.RawMessage                `json:"tools"`
+			Messages []struct{ Role, Content string } `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, "bad", 400)
+			return
+		}
+		call := calls.Add(1)
+		if len(req.Tools) != 7 {
+			t.Errorf("tools=%d", len(req.Tools))
+		}
+		if call <= 2 {
+			users := 0
+			batchFound := false
+			for _, m := range req.Messages {
+				if m.Role == "user" {
+					users++
+					batchFound = strings.Contains(m.Content, fmt.Sprintf(`"index":%d`, call))
+				}
+			}
+			if users != 1 || !batchFound {
+				t.Errorf("batch %d did not start with isolated assigned context: users=%d", call, users)
+			}
+		}
+		writeLoopResponse(w, req.Stream, "done", nil)
+	}))
+	defer provider.Close()
+	dir := t.TempDir()
+	for i := 0; i < 21; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.go", i)), []byte("package p\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.test"}, {"commit", "--allow-empty", "-m", "base"}, {"update-ref", "refs/worktree/review/merge-base", "HEAD"}, {"add", "."}, {"commit", "-m", "head"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v %s", err, out)
+		}
+	}
+	runner, err := New(config.AgentConfig{HomeDir: t.TempDir(), Provider: "openai-compatible", Model: "test", APIKey: "test", APIBase: provider.URL + "/v1", TaskTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	ctx, metrics := observe.Start(context.Background())
+	result, err := runner.Review(ctx, ReviewInput{WorkDir: dir})
+	if err != nil || calls.Load() != 2 || len(result.CoveredFiles) != 21 || metrics.Snapshot().BatchesCompleted != 2 {
+		t.Fatalf("%+v %v calls=%d", result, err, calls.Load())
+	}
+	resumed, err := runner.Review(context.Background(), ReviewInput{WorkDir: dir, SessionID: result.SessionID})
+	if err != nil || calls.Load() != 3 || resumed.SessionID != result.SessionID || len(resumed.CoveredFiles) != 21 {
+		t.Fatalf("followup %+v %v calls=%d", resumed, err, calls.Load())
+	}
 }

@@ -266,6 +266,7 @@ func TestPendingDuplicateAndFullQueue(t *testing.T) {
 	}
 
 	item := <-s.jobs
+	s.queuedAuto = map[string]github.Review{}
 	for i := 0; i < cap(s.jobs); i++ {
 		s.jobs <- item
 	}

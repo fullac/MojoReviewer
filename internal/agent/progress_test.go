@@ -68,8 +68,8 @@ func TestReviewReadsDeduplicatePathsAndRanges(t *testing.T) {
 	}
 	git("add", ".")
 	git("commit", "-m", "base")
-	git("update-ref", "refs/review/base", "HEAD")
-	git("update-ref", "refs/review/merge-base", "HEAD")
+	git("update-ref", "refs/worktree/review/base", "HEAD")
+	git("update-ref", "refs/worktree/review/merge-base", "HEAD")
 	if err := os.WriteFile(path, []byte("after\nsecond\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}

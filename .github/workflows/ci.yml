@@ -57,6 +57,16 @@ jobs:
         working-directory: MojoReviewer
         run: python3 -m unittest discover -s ops -p 'test_*.py'
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Test manager metrics UI
+        working-directory: MojoReviewer
+        run: node --test ops/test_metrics.cjs
+
       - name: Build
         working-directory: MojoReviewer
-        run: go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
+        run: |
+          go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
+          go build -mod=readonly -o /tmp/mojoeval ./cmd/mojoeval

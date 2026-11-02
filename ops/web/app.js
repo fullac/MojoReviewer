@@ -2,6 +2,7 @@
 let state = {
 }, loadedConfig = false, busy = false;
 const $ = selector => document.querySelector(selector);
+const expandedMetrics = new Set();
 const labels = {
   stopped:'服务已停止',starting:'正在启动',running:'服务运行中',recovering:'正在恢复入口',error:'等待恢复',queued:'排队中',running_review:'审查中',completed:'已发布',failed:'失败',interrupted:'已中断',skipped:'已跳过'
 };
@@ -27,6 +28,48 @@ function cell(row, text) {
   td.textContent=text;
   row.append(td);
   return td;
+}
+// 观测值只通过 textContent 展示；不把工具参数、结果或错误正文送到页面。
+function renderMetrics(td, item) {
+  const m=item.metrics;
+  if(!m){td.textContent='未记录';return;}
+  const details=document.createElement('details');
+  details.className='review-metrics';
+  details.open=expandedMetrics.has(item.id);
+  details.addEventListener('toggle',()=>details.open?expandedMetrics.add(item.id):expandedMetrics.delete(item.id));
+  const summary=document.createElement('summary');
+  summary.textContent=(m.total_ms/1000).toFixed(2)+' 秒 · '+m.iterations+' 轮 · '+(m.usage?m.usage.total_tokens+' token':'用量未记录');
+  details.append(summary);
+  const stages={checkout:'检出',memory:'项目记忆',manifest:'改动清单',model:'模型',ground:'依据校验',publish:'发布'};
+  for(const [key,label] of Object.entries(stages)){
+    const line=document.createElement('div');
+    line.textContent=label+'：'+(Object.hasOwn(m.stages_ms||{},key)?(m.stages_ms[key]/1000).toFixed(3)+' 秒':'未执行');
+    details.append(line);
+  }
+  if(typeof m.memory_cache_hit==='boolean'){
+    const line=document.createElement('div');
+    line.textContent='记忆索引：'+(m.memory_cache_hit?'命中提交缓存':'完成索引检查')+' · '+m.memory_files+' 个文档';
+    details.append(line);
+  }
+  if(Object.hasOwn(m.stages_ms||{},'ground')){
+    const line=document.createElement('div');line.textContent='依据校验未通过 '+(m.ground_rejected||0)+' 条';details.append(line);
+  }
+  if(m.batches_total){const line=document.createElement('div');line.textContent='批次完成 '+m.batches_completed+'/'+m.batches_total;details.append(line);}
+  if(m.usage){
+    const line=document.createElement('div');
+    line.textContent='输入 '+m.usage.input_tokens+' / 输出 '+m.usage.output_tokens+' / 缓存命中 '+m.usage.cached_input_tokens;
+    details.append(line);
+  }
+  const title=document.createElement('div');
+  title.textContent='工具调用 '+m.tool_count+' 次（最多显示 400 条；按运行时记录顺序）';
+  details.append(title);
+  const list=document.createElement('ol');
+  for(const tool of m.tools||[]){
+    const line=document.createElement('li');
+    line.textContent=tool.name+' · '+tool.duration_ms+' ms · 返回 '+tool.result_bytes+' 字节';
+    list.append(line);
+  }
+  details.append(list);td.append(details);
 }
 async function refresh() {
   try {
@@ -57,6 +100,7 @@ async function refresh() {
       badge.textContent=item.state==='running'?'审查中':labels[item.state]||item.state;
       status.append(badge);
       if(item.state==='failed')badge.title='失败阶段：'+item.stage;
+      renderMetrics(cell(row,''), item);
       cell(row,new Date(item.updated_at).toLocaleString('zh-CN',{
         hour12:false
       }));

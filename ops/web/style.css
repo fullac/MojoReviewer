@@ -461,3 +461,7 @@ header {
 }
 
 }
+
+.review-metrics { min-width: 240px; font-size: 12px; line-height: 1.8; }
+.review-metrics summary { cursor: pointer; }
+.review-metrics ol { max-height: 240px; overflow: auto; padding-left: 24px; white-space: nowrap; }

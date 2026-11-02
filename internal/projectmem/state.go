@@ -2,20 +2,23 @@ package projectmem
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 )
 
-// FileState 记录单个知识文件上次索引时的大小与 mtime。
+// FileState 记录知识文件的内容哈希与元数据，避免同大小、同时间的编辑漏索引。
 type FileState struct {
+	Hash    string    `json:"hash,omitempty"`
 	Size    int64     `json:"size"`
 	ModTime time.Time `json:"mod_time"`
 }
 
 // RepoState 是某个仓库的项目记忆索引状态。
 type RepoState struct {
+	Version    int                  `json:"version,omitempty"`
 	Repo       string               `json:"repo"`
 	HeadSHA    string               `json:"head_sha"`
 	UpdatedAt  time.Time            `json:"updated_at"`
@@ -56,6 +59,7 @@ func (s *Store) Get(repo string) (RepoState, bool) {
 	if st.Indexed == nil {
 		st.Indexed = map[string]FileState{}
 	}
+	st.Indexed = maps.Clone(st.Indexed)
 	return st, true
 }
 
@@ -68,10 +72,30 @@ func (s *Store) Put(repo string, st RepoState) error {
 	}
 	st.Repo = repo
 	st.UpdatedAt = time.Now().UTC()
-	s.data[repo] = st
-	raw, err := json.MarshalIndent(s.data, "", "  ")
+	st.Indexed = maps.Clone(st.Indexed)
+	next := maps.Clone(s.data)
+	next[repo] = st
+	raw, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, append(raw, '\n'), 0o600)
+	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".project-memory-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err = tmp.Write(append(raw, '\n')); err == nil {
+		err = tmp.Sync()
+	}
+	closeErr := tmp.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), s.path)
+	}
+	if err == nil {
+		s.data = next
+	}
+	return err
 }

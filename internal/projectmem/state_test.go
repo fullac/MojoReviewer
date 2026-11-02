@@ -32,15 +32,3 @@ func TestStoreRoundTrip(t *testing.T) {
 		t.Fatalf("roundtrip: %+v ok=%v", got, ok)
 	}
 }
-
-func TestFileStateEqualish(t *testing.T) {
-	a := FileState{Size: 1, ModTime: time.Unix(100, 0).UTC()}
-	b := FileState{Size: 1, ModTime: time.Unix(100, 500000000).UTC()}
-	if !a.equalish(b) {
-		t.Fatal("应容忍亚秒误差")
-	}
-	c := FileState{Size: 2, ModTime: a.ModTime}
-	if a.equalish(c) {
-		t.Fatal("大小不同不应相等")
-	}
-}

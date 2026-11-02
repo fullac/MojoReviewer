@@ -18,6 +18,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
@@ -46,6 +47,8 @@ func TestRenderedReviewCommentCannotTriggerWebhook(t *testing.T) {
 }
 
 type recordingRunner struct {
+	memoryInputs []agent.ReviewInput
+	memoryResult projectmem.ContextBundle
 	inputs       []agent.ReviewInput
 	fixInputs    []agent.ReviewInput
 	remembers    []string
@@ -140,6 +143,7 @@ esac
 	runner := &recordingRunner{}
 	s := New(cfg, nil, st)
 	s.runner = runner
+	s.resolveHead = func(_ context.Context, item github.Review, _ string) (github.Review, error) { return item, nil }
 	return s, runner, apiPath, commentPath
 }
 
@@ -176,7 +180,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
+func TestCommentReviewStartsFreshOnNewHeadAndReusesSameHead(t *testing.T) {
 	origin := t.TempDir()
 	runGit(t, origin, "init", "-b", "main")
 	runGit(t, origin, "config", "user.name", "mojo")
@@ -222,10 +226,10 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("评论触发未进入审查: %+v", runner.inputs)
 	}
 	input := runner.inputs[0]
-	if input.SessionID != "existing-session" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
+	if input.SessionID != "" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
 		t.Fatalf("审查上下文错误: %+v", input)
 	}
-	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/review/base") != base {
+	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/worktree/review/base") != base {
 		t.Fatal("没有检出最新 head 或正确 base")
 	}
 	// issue #21: bulk diff is no longer preloaded into ReviewInput / prompt.
@@ -255,6 +259,9 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	s.runOne(context.Background(), item)
 	if len(runner.inputs) != 2 {
 		t.Fatal("完整的 PR 任务未正常审查")
+	}
+	if runner.inputs[1].SessionID != "existing-session" || runner.inputs[1].Previous == nil || runner.inputs[1].Previous.ReviewedSHA != head {
+		t.Fatal("same-head followup lost session or reviewed baseline")
 	}
 	if _, err := os.Stat(apiPath); !os.IsNotExist(err) {
 		t.Fatalf("自动 PR 事件不应补拉元数据: %v", err)
@@ -343,7 +350,7 @@ func TestPublicFailureRedactsOperationalDetail(t *testing.T) {
 
 func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
 	s, runner, _, commentPath := testServer(t, `{"number":7,"title":"t","body":"","user":{"login":"a"},"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///tmp"}},"head":{"ref":"f","sha":"head"}}`, "")
-	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo remember 基线用 refs/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo remember 基线用 refs/worktree/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
 	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
 	_, _ = mac.Write([]byte(body))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -362,7 +369,7 @@ func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
 	if len(runner.inputs) != 0 {
 		t.Fatal("remember 不应进入审查")
 	}
-	if len(runner.remembers) != 1 || !strings.Contains(runner.remembers[0], "基线用 refs/review/base") {
+	if len(runner.remembers) != 1 || !strings.Contains(runner.remembers[0], "基线用 refs/worktree/review/base") {
 		t.Fatalf("未写入记忆: %#v", runner.remembers)
 	}
 	comment, err := os.ReadFile(commentPath)
@@ -492,4 +499,9 @@ func TestFixAuthorAllowedHelper(t *testing.T) {
 	if fixAuthorAllowed([]string{"ada"}, "bob") {
 		t.Fatal("未授权应拒绝")
 	}
+}
+
+func (r *recordingRunner) PrepareMemory(_ context.Context, input agent.ReviewInput) projectmem.ContextBundle {
+	r.memoryInputs = append(r.memoryInputs, input)
+	return r.memoryResult
 }
