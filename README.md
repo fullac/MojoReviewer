@@ -242,3 +242,7 @@ GOWORK=off go run ./cmd/mojoeval -cases ./cases.json -config .MojoReviewer/confi
 ```bash
 GOWORK=off go run ./cmd/mojoeval -cases ./cases.json -output ./with-memory.json -manifest=true -memory=true
 ```
+
+## 发布前依据校验（#48）
+
+只读审查正常结束或中断后，宿主先核验结构化意见再渲染。位置必须属于本次改动文件，行号落在改动行段或工具实际返回的源码行段内，正文位置必须与 path/line 完全一致。删除文件使用共同祖先的行号；其他文件使用 head 行号。问题描述中行内代码形式的标识符必须在该文件存在，修复建议允许新名称。越界、链接、超大或无法核验的内容不发布，评论说明过滤数量，管理台显示依据校验耗时及过滤数。此校验只确认可定位性，不证明业务判断正确；不增加额外模型复核。

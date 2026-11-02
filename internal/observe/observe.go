@@ -23,6 +23,7 @@ type Tool struct {
 }
 
 type Snapshot struct {
+	GroundRejected int              `json:"ground_rejected"`
 	MemoryCacheHit *bool            `json:"memory_cache_hit,omitempty"`
 	MemoryFiles    int              `json:"memory_files"`
 	StartedAt      string           `json:"started_at"`
@@ -139,4 +140,13 @@ func (r *Recorder) Memory(hit bool, files int) {
 	defer r.mu.Unlock()
 	r.data.MemoryCacheHit = &hit
 	r.data.MemoryFiles = files
+}
+
+func (r *Recorder) Ground(rejected int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.data.GroundRejected += rejected
 }

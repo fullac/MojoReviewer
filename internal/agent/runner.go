@@ -145,7 +145,21 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	text, err := r.runModel(ctx, sessionID, prompt(input))
-	return reviewResult(sessionID, text, notes, reads, err)
+	groundDone := observe.Stage(ctx, "ground")
+	// Model timeout must not prevent checking already collected notes.
+	groundCtx, cancelGround := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	grounded, rejected, groundErr := review.Ground(groundCtx, input.WorkDir, notes.Snapshot(), reads.evidence())
+	cancelGround()
+	groundDone()
+	observe.From(ctx).Ground(rejected)
+	if groundErr != nil && err == nil {
+		err = groundErr
+	}
+	result, err := reviewResult(sessionID, text, grounded, reads, err)
+	if rejected > 0 {
+		result.Text += fmt.Sprintf("\n\n宿主未发布 %d 条无法核验依据的意见。", rejected)
+	}
+	return result, err
 }
 
 // runModel uses LH's public loop API because ChatSession falls back to plain
