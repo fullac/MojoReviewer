@@ -99,7 +99,7 @@ func (s ToolScope) FileDiff(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", rel)
+	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", ":(literal)"+rel)
 	if err != nil {
 		return "", err
 	}
@@ -345,7 +345,7 @@ func (s ToolScope) clean(path string) (string, error) {
 }
 
 func changedLines(dir, rel string) ([][2]int, error) {
-	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", rel)
+	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", ":(literal)"+rel)
 	if err != nil {
 		return nil, err
 	}

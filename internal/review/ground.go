@@ -97,13 +97,13 @@ func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n
 	if err != nil || n.Line > len(strings.Split(strings.TrimSuffix(source, "\n"), "\n")) {
 		return false
 	}
-	patch, err := manifestGit(ctx, scope.Dir, 4<<20, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", mergeBaseRef, "HEAD", "--", n.Path)
+	patch, err := manifestGit(ctx, scope.Dir, 4<<20, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", mergeBaseRef, "HEAD", "--", ":(literal)"+n.Path)
 	if err != nil {
 		return false
 	}
 	if deleted {
 		// Reverse the diff so parseChangedLines reads the old-side coordinates.
-		patch, err = manifestGit(ctx, scope.Dir, 4<<20, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "HEAD", mergeBaseRef, "--", n.Path)
+		patch, err = manifestGit(ctx, scope.Dir, 4<<20, "diff", "--no-ext-diff", "--no-textconv", "--no-renames", "-U0", "HEAD", mergeBaseRef, "--", ":(literal)"+n.Path)
 		if err != nil {
 			return false
 		}

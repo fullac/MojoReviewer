@@ -17,7 +17,7 @@ func TestExecuteBatchesPreservesPartialResults(t *testing.T) {
 	batches := []review.Batch{{Files: []string{"a.go"}, Index: 1, Total: 3}, {Files: []string{"b.go"}, Index: 2, Total: 3}, {Files: []string{"c.go"}, Index: 3, Total: 3}}
 	calls := 0
 	n := review.Note{Severity: "建议", Path: "a.go", Line: 1, Body: "- **问题描述：** 问题。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 修复。"}
-	result, err := executeBatches(ctx, ReviewInput{SessionID: "previous"}, batches, func(c context.Context, in ReviewInput) (ReviewResult, error) {
+	result, err := executeBatches(ctx, ReviewInput{SessionID: "previous", Manifest: &review.Manifest{}}, batches, func(c context.Context, in ReviewInput) (ReviewResult, error) {
 		calls++
 		if in.SessionID != "" || in.Batch.Index != calls || !in.Manifest.Complete {
 			t.Fatal(in)
@@ -47,5 +47,19 @@ func TestExecuteBatchesStopsAfterCancellation(t *testing.T) {
 	})
 	if err == nil || calls != 1 || len(result.Unreviewed) != 2 {
 		t.Fatalf("%+v %v %d", result, err, calls)
+	}
+}
+
+func TestExecuteBatchesPreservesDisabledManifest(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err := executeBatches(ctx, ReviewInput{}, []review.Batch{{Files: []string{"a"}}}, func(_ context.Context, in ReviewInput) (ReviewResult, error) {
+		if in.Manifest != nil {
+			t.Fatal("batch reenabled disabled manifest")
+		}
+		return ReviewResult{}, nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

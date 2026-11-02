@@ -71,3 +71,25 @@ func TestReturnedRanges(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+func TestGroundAndDiffTreatPathAsLiteral(t *testing.T) {
+	dir := symlinkReviewRepo(t)
+	for _, path := range []string{"a[1].go", "a1.go"} {
+		write(t, filepath.Join(dir, path), "line1\nline2\n")
+	}
+	run(t, dir, "git", "add", ".")
+	run(t, dir, "git", "commit", "-m", "base")
+	run(t, dir, "git", "update-ref", mergeBaseRef, "HEAD")
+	write(t, filepath.Join(dir, "a[1].go"), "line1\nchanged literal\n")
+	write(t, filepath.Join(dir, "a1.go"), "changed wildcard\nline2\n")
+	run(t, dir, "git", "commit", "-am", "head")
+	patch, err := (ToolScope{Dir: dir}).FileDiff("a[1].go")
+	if err != nil || strings.Contains(patch, "changed wildcard") || !strings.Contains(patch, "changed literal") {
+		t.Fatalf("%s %v", patch, err)
+	}
+	n := Note{Severity: "建议", Path: "a[1].go", Line: 1, Body: "- **问题描述：** 问题。\n\n- **代码位置：** `a[1].go:1`\n\n- **修复建议：** 修复。"}
+	out, _, err := Ground(context.Background(), dir, []Note{n}, nil)
+	if err != nil || out.Len() != 0 {
+		t.Fatal("another file supplied changed-line evidence", err)
+	}
+}

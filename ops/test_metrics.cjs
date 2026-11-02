@@ -35,3 +35,10 @@ test('empty memory index displays zero documents',()=>{
   context.renderMetrics(td,{id:'empty-memory',metrics:{total_ms:10,iterations:1,usage:null,tool_count:0,memory_cache_hit:false,memory_files:0}});
   assert.match(td.text(),/完成索引检查 · 0 个文档/);
 });
+
+test('grounding rejection and partial batches remain visible',()=>{
+ const td=new Element('td');
+ context.renderMetrics(td,{id:'partial',metrics:{total_ms:10,iterations:1,usage:null,tool_count:0,stages_ms:{ground:5},ground_rejected:2,batches_total:3,batches_completed:1}});
+ assert.match(td.text(),/依据校验未通过 2 条/);
+ assert.match(td.text(),/批次完成 1\/3/);
+});

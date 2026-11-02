@@ -3,6 +3,7 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
@@ -52,18 +53,22 @@ func PlanBatches(ctx context.Context, dir string) ([]Batch, error) {
 	})
 	batches := []Batch{{Files: []string{}}}
 	count := 0
+	pathBytes := 0
 	lastDir := ""
 	split := len(rows) > BatchMaxFiles || total > BatchMaxLines
 	for _, r := range rows {
+		encoded, _ := json.Marshal(r.path)
 		current := &batches[len(batches)-1]
 		dir := filepath.Dir(r.path)
-		if split && len(current.Files) > 0 && (len(current.Files) >= BatchMaxFiles || count+r.lines > BatchMaxLines || dir != lastDir) {
+		if len(current.Files) > 0 && (pathBytes+len(encoded) > 8<<10 || (split && (len(current.Files) >= BatchMaxFiles || count+r.lines > BatchMaxLines || dir != lastDir))) {
 			batches = append(batches, Batch{Files: []string{}})
 			current = &batches[len(batches)-1]
 			count = 0
+			pathBytes = 0
 		}
 		current.Files = append(current.Files, r.path)
 		count += r.lines
+		pathBytes += len(encoded)
 		lastDir = dir
 	}
 	for i := range batches {
@@ -74,6 +79,9 @@ func PlanBatches(ctx context.Context, dir string) ([]Batch, error) {
 }
 
 func BatchManifest(m *Manifest, b Batch) *Manifest {
+	if m == nil {
+		return nil
+	}
 	out := &Manifest{TotalFiles: len(b.Files), Complete: true, Files: []ChangedFile{}}
 	known := map[string]ChangedFile{}
 	if m != nil {
@@ -87,6 +95,15 @@ func BatchManifest(m *Manifest, b Batch) *Manifest {
 		} else {
 			out.Files = append(out.Files, ChangedFile{Path: path, DetailsPartial: true})
 		}
+	}
+	for {
+		raw, _ := json.Marshal(out)
+		if len(raw) <= ManifestMaxBytes || len(out.Files) == 0 {
+			break
+		}
+		out.Files = out.Files[:len(out.Files)-1]
+		out.OmittedFiles++
+		out.Complete = false
 	}
 	return out
 }

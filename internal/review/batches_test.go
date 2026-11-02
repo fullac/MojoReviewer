@@ -3,8 +3,10 @@ package review
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -33,5 +35,23 @@ func TestPlanBatchesCompleteAndStable(t *testing.T) {
 	}
 	if len(seen) != 43 {
 		t.Fatal("missing files", len(seen))
+	}
+}
+
+func TestBatchManifestKeepsSizeAndCompletenessContract(t *testing.T) {
+	if BatchManifest(nil, Batch{Files: []string{"x"}}) != nil {
+		t.Fatal("disabled manifest restored")
+	}
+	m := &Manifest{}
+	b := Batch{}
+	for i := 0; i < 20; i++ {
+		path := fmt.Sprint(i)
+		b.Files = append(b.Files, path)
+		m.Files = append(m.Files, ChangedFile{Path: path, Tests: []string{strings.Repeat("a", 2000)}})
+	}
+	out := BatchManifest(m, b)
+	raw, _ := json.Marshal(out)
+	if len(raw) > ManifestMaxBytes || out.Complete || out.OmittedFiles != len(b.Files)-len(out.Files) {
+		t.Fatalf("%d %+v", len(raw), out)
 	}
 }

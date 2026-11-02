@@ -228,3 +228,63 @@ func writeLoopResponse(w http.ResponseWriter, stream bool, text string, tool map
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{"id": "fixture", "choices": []any{choice}, "usage": map[string]int{"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}})
 }
+
+func TestRealRuntimeSerialBatchesAndSameHeadFollowup(t *testing.T) {
+	var calls atomic.Int32
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Stream   bool                             `json:"stream"`
+			Tools    []json.RawMessage                `json:"tools"`
+			Messages []struct{ Role, Content string } `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, "bad", 400)
+			return
+		}
+		call := calls.Add(1)
+		if len(req.Tools) != 7 {
+			t.Errorf("tools=%d", len(req.Tools))
+		}
+		if call <= 2 {
+			users := 0
+			batchFound := false
+			for _, m := range req.Messages {
+				if m.Role == "user" {
+					users++
+					batchFound = strings.Contains(m.Content, fmt.Sprintf(`"index":%d`, call))
+				}
+			}
+			if users != 1 || !batchFound {
+				t.Errorf("batch %d did not start with isolated assigned context: users=%d", call, users)
+			}
+		}
+		writeLoopResponse(w, req.Stream, "done", nil)
+	}))
+	defer provider.Close()
+	dir := t.TempDir()
+	for i := 0; i < 21; i++ {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.go", i)), []byte("package p\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.test"}, {"commit", "--allow-empty", "-m", "base"}, {"update-ref", "refs/worktree/review/merge-base", "HEAD"}, {"add", "."}, {"commit", "-m", "head"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v %s", err, out)
+		}
+	}
+	runner, err := New(config.AgentConfig{HomeDir: t.TempDir(), Provider: "openai-compatible", Model: "test", APIKey: "test", APIBase: provider.URL + "/v1", TaskTimeout: 10 * time.Second})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	ctx, metrics := observe.Start(context.Background())
+	result, err := runner.Review(ctx, ReviewInput{WorkDir: dir})
+	if err != nil || calls.Load() != 2 || len(result.CoveredFiles) != 21 || metrics.Snapshot().BatchesCompleted != 2 {
+		t.Fatalf("%+v %v calls=%d", result, err, calls.Load())
+	}
+	resumed, err := runner.Review(context.Background(), ReviewInput{WorkDir: dir, SessionID: result.SessionID})
+	if err != nil || calls.Load() != 3 || resumed.SessionID != result.SessionID || len(resumed.CoveredFiles) != 21 {
+		t.Fatalf("followup %+v %v calls=%d", resumed, err, calls.Load())
+	}
+}

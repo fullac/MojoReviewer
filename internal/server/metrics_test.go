@@ -7,10 +7,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
@@ -66,6 +68,39 @@ func TestHostPreparesMemoryForReviewAndFix(t *testing.T) {
 			}
 			if len(inputs) != 1 || len(inputs[0].Memory.Memories) != 1 || inputs[0].Memory.Memories[0] != "prepared" {
 				t.Fatal("prepared memory not passed to model")
+			}
+		})
+	}
+}
+
+func TestReviewedBaselineOnlyAdvancesAfterSuccessfulPublication(t *testing.T) {
+	for _, phase := range []string{"success", "model", "publish"} {
+		t.Run(phase, func(t *testing.T) {
+			s, r, _, _ := testServer(t, "", "")
+			item := localReviewItem(t)
+			origin := strings.TrimPrefix(item.CloneURL, "file://")
+			runGit(t, origin, "commit", "--allow-empty", "-m", "next head")
+			item.HeadSHA = runGit(t, origin, "rev-parse", "HEAD")
+			s.store.Put(item.SessionKey, store.Record{HeadSHA: item.BaseSHA, SessionID: "old"})
+			s.store.SaveReviewed(item.SessionKey, item.BaseSHA, []review.Finding{{ID: "old", Status: "pending", VerifiedSHA: item.BaseSHA}})
+			if phase == "model" {
+				r.reviewErr = errors.New("failed")
+				r.reviewResult = &agent.ReviewResult{SessionID: "new"}
+			}
+			if phase == "publish" {
+				t.Setenv("MOJO_TEST_POST_FAILURE", "1")
+			}
+			s.runOne(context.Background(), item)
+			rec, _ := s.store.Get(item.SessionKey)
+			want := item.BaseSHA
+			if phase == "success" {
+				want = item.HeadSHA
+			}
+			if rec.ReviewedSHA != want || len(rec.Findings) != 1 || rec.Findings[0].Status != "pending" {
+				t.Fatalf("%+v", rec)
+			}
+			if len(r.inputs) != 1 || r.inputs[0].SessionID != "" || r.inputs[0].Previous == nil {
+				t.Fatal("new head inherited conversation or lost history")
 			}
 		})
 	}
