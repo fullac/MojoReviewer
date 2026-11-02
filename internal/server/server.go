@@ -294,7 +294,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		return
 	}
 	checkoutDone := observe.Stage(ctx, "checkout")
-	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	ws, err := review.PrepareWithBaseContext(ctx, s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	checkoutDone()
 	if err != nil {
 		s.postFailure(ctx, item, "准备仓库失败", err)
@@ -355,7 +355,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 
 func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activity) {
 	checkoutDone := observe.Stage(ctx, "checkout")
-	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
+	ws, err := review.PrepareWithBaseContext(ctx, s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	checkoutDone()
 	if err != nil {
 		s.postFailure(ctx, item, "准备仓库失败", err)

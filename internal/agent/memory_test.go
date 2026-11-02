@@ -61,7 +61,7 @@ func TestMemoryPreparationDoesNotConsumeModelDeadline(t *testing.T) {
 	runner.memory = &projectmem.Indexer{Store: st, Agent: memory}
 	work := t.TempDir()
 	os.WriteFile(filepath.Join(work, "README.md"), []byte("documentation"), 0600)
-	for _, args := range [][]string{{"init"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.test"}, {"add", "."}, {"commit", "-m", "fixture"}, {"update-ref", "refs/review/merge-base", "HEAD"}} {
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.test"}, {"add", "."}, {"commit", "-m", "fixture"}, {"update-ref", "refs/worktree/review/merge-base", "HEAD"}} {
 		if out, err := exec.Command("git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
 			t.Fatalf("git: %v %s", err, out)
 		}

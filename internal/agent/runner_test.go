@@ -18,7 +18,7 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		// Diff must not appear in the prompt even if a caller still fills it.
 		Diff: strings.Repeat("HUGE_DIFF_SHOULD_NOT_APPEAR_", 5000),
 		Memory: projectmem.ContextBundle{
-			Memories: []string{"仓库约定：比较基线用 refs/review/base"},
+			Memories: []string{"仓库约定：比较基线用 refs/worktree/review/base"},
 			RAGHits:  []string{"[AGENTS.md] 只审查，不改仓库"},
 		},
 	})
@@ -32,7 +32,7 @@ func TestPromptUsesReviewTools(t *testing.T) {
 		"tests_around",
 		"detached checkout",
 		"shallow",
-		"refs/review/base",
+		"refs/worktree/review/base",
 		"git diff main...HEAD",
 		"项目记忆",
 		"只审查，不改仓库",
@@ -209,7 +209,7 @@ func TestFixPrompt(t *testing.T) {
 		WorkDir: "/tmp/review",
 		Diff:    strings.Repeat("FIX_DIFF_SHOULD_NOT_APPEAR_", 3000),
 	})
-	for _, want := range []string{"file_patch", "file_write", "宿主", "改超时", "refs/review/base", "不要期待提示词里有整份 diff"} {
+	for _, want := range []string{"file_patch", "file_write", "宿主", "改超时", "refs/worktree/review/base", "不要期待提示词里有整份 diff"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("fix 提示缺少 %q:\n%s", want, got)
 		}

@@ -169,7 +169,7 @@ func runCase(ctx context.Context, c Case, dataDir string, runner Runner, opts Op
 	ctx, metrics := observe.Start(ctx)
 	result := Result{ID: c.ID, BaseSHA: c.BaseSHA, HeadSHA: c.HeadSHA, State: "failed"}
 	done := observe.Stage(ctx, "checkout")
-	ws, err := review.PrepareWithBase(dataDir, "eval/local", c.Repository, c.HeadSHA, c.ID, "", c.BaseSHA)
+	ws, err := review.PrepareWithBaseContext(ctx, dataDir, "eval/local", c.Repository, c.HeadSHA, c.ID, "", c.BaseSHA)
 	done()
 	if err != nil {
 		result.Reason = "checkout"

@@ -164,7 +164,7 @@ go vet ./...
 - 所有评论在调用 `gh` 前检查配置密钥、GitHub 环境凭据和常见令牌格式；命中则拒绝整条发布，日志只记录拒绝原因。
 - 只读审查正文始终由宿主按 `review_note` 渲染。零笔记时发布固定结构并说明不代表所有改动均已核实，模型自由文本不会作为兜底正文。
 
-检出时将 PR base SHA 固定在 `refs/review/base`，将它与 head 的唯一共同祖先固定在 `refs/review/merge-base`。diff、文件统计、改动符号和测试定位都使用后者，因此 base 分支后来新增的改动不会被误算为本 PR 的删除。工具读取不再 fetch；找不到唯一共同祖先时停止本次准备。
+检出时将 PR base SHA 固定在 `refs/worktree/review/base`，将它与 head 的唯一共同祖先固定在 `refs/worktree/review/merge-base`。diff、文件统计、改动符号和测试定位都使用后者，因此 base 分支后来新增的改动不会被误算为本 PR 的删除。工具读取不再 fetch；找不到唯一共同祖先时停止本次准备。
 
 ## 大 PR 与中断回报
 
@@ -254,3 +254,9 @@ GOWORK=off go run ./cmd/mojoeval -cases ./cases.json -output ./with-memory.json 
 ## 自动任务合并（#49）
 
 同一 PR 尚未执行的自动事件共用一个队列位置，新投递替换旧载荷；旧回执记为 skipped/superseded，新旧回执一次原子落盘。评论与 GUI 显式重审独立排队，不被合并。开始前宿主查询 GitHub 当前 head；已过时任务不检出、不调用模型、不添加开始表情，也不占用已开始 head 历史。乱序事件造成最新任务被替换时，可在有空位且未重复的前提下补排远端当前 head。队列仍为 32，无法新增位置返回 429；已开始的失败尝试仍持久去重。
+
+## 仓库对象缓存与独立检出（#50）
+
+`data_dir/repos/` 按仓库和来源地址保存共享裸仓库，每次只请求固定 base/head，使用 blob:none 部分获取（远端不支持时 Git 可退回完整对象）。`workspaces/` 中各 PR 使用独立 detached worktree；路径带身份哈希避免清洗后的名称碰撞。比较引用使用 Git 的工作目录私有命名空间 `refs/worktree/review/base` 与 `refs/worktree/review/merge-base`，不会因其他 PR 更新而改变。准备阶段预取固定差异所需对象，模型工具不负责 fetch。
+
+旧版独立克隆目录原样保留，新目录不会覆盖它们。复用检出若存在未提交修改，宿主保留现场并拒绝继续；准备失败会使旧共同祖先失效。共享缓存保持完整提交祖先，省去的是重复历史对象与未使用的历史文件内容，不能保证任意远端都支持部分获取。修复提交仍走现有宿主非 force push 门禁。

@@ -368,7 +368,7 @@ func prompt(input ReviewInput) string {
 	b.WriteString("5. 每发现一条问题就调用 review_note，填写简短 title 与 Markdown body；遵守系统提示中的评论表达规则。severity 只能是「严重」或「建议」。\n\n")
 	b.WriteString("主线证据足够后必须记录 review_note 并结束；没有发现问题则明确结束，不为凑结论反复读文件。无法核实的范围应明确说明，不能宣称完整审查。\n")
 	b.WriteString("规则：\n")
-	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。refs/review/base 保存 PR base 提交，比较基线用 refs/review/merge-base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
+	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。refs/worktree/review/base 保存 PR base 提交，比较基线用 refs/worktree/review/merge-base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
 	b.WriteString("2. 只审查，不修改文件，不执行 git commit、git push、gh pr create、gh pr merge。\n")
 	b.WriteString("3. 最终回复只写一句状态。评论正文由 review_note 汇总，不要在回复里再写一份。没有问题时不要调用 review_note。\n")
 	return b.String()
@@ -412,7 +412,7 @@ func fixPrompt(input ReviewInput) string {
 	b.WriteString("4. 不要自己 git commit / push，也不要创建或合并 PR。会话结束后由宿主提交并推送到 PR 分支。\n")
 	b.WriteString("5. 改完后用中文总结：改了哪些文件、解决了什么；仍有风险用 review_note 记下来。\n\n")
 	b.WriteString("规则：\n")
-	b.WriteString("1. 工作区是 detached checkout，可能是 shallow。refs/review/base 保存 PR base 提交，比较基线用 refs/review/merge-base。\n")
+	b.WriteString("1. 工作区是 detached checkout，可能是 shallow。refs/worktree/review/base 保存 PR base 提交，比较基线用 refs/worktree/review/merge-base。\n")
 	b.WriteString("2. 只做用户要求范围内的最小改动。\n")
 	return b.String()
 }

@@ -131,7 +131,7 @@ func TestManagedReviewLoop(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package fixture\n"+strings.Repeat("// fixture\n", 40)), 0600); err != nil {
 				t.Fatal(err)
 			}
-			for _, args := range [][]string{{"init"}, {"config", "user.email", "test@example.test"}, {"config", "user.name", "test"}, {"commit", "--allow-empty", "-m", "base"}, {"update-ref", "refs/review/merge-base", "HEAD"}, {"add", "."}, {"commit", "-m", "head"}} {
+			for _, args := range [][]string{{"init"}, {"config", "user.email", "test@example.test"}, {"config", "user.name", "test"}, {"commit", "--allow-empty", "-m", "base"}, {"update-ref", "refs/worktree/review/merge-base", "HEAD"}, {"add", "."}, {"commit", "-m", "head"}} {
 				if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
 					t.Fatalf("git: %v %s", err, out)
 				}

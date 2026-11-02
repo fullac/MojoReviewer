@@ -93,7 +93,7 @@ func (s ToolScope) StatPage(offset, limit int) (string, error) {
 	return header + strings.TrimSuffix(page.String(), "\n"), nil
 }
 
-// FileDiff 只返回一个文件相对 refs/review/merge-base 的 patch。
+// FileDiff 只返回一个文件相对 refs/worktree/review/merge-base 的 patch。
 func (s ToolScope) FileDiff(path string) (string, error) {
 	rel, err := s.clean(path)
 	if err != nil {

@@ -6,7 +6,7 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 
 - 默认只审查。不 `gh pr create`，不 `gh pr merge`。
 - `fix` 且 `agent.fix_enabled` 时：模型可改检出内文件；**宿主**在 `fix_push_enabled` 下 commit/push 到 PR head（非 force，有作者/路径/体量门禁）。仍禁止模型自己调用 terminal/git。
-- 模型工具必须落在这次检出里。`refs/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/review/merge-base`，不是本地 `main`。
+- 模型工具必须落在这次检出里。`refs/worktree/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/worktree/review/merge-base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
 - 一个进程只用 `agent.provider` 和 `agent.model` 这一组，chat/compact 温度固定为 `0.5`。不要按任务换模型。
 - 本项目始终不修改 LH 源码或引入私有补丁。Mojo 的隔离 SDK 配置关闭 `agent.foreground.enabled`，普通工具循环最多 30 次迭代；任务总超时、审查状态和发布由宿主管理，会话仍可复用，新任务不生成 foreground 检查点。
@@ -64,7 +64,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 1. `github.ValidSignature`。secret 为空直接拒绝。body 最多读 2 MiB。
 2. `pull_request` 只收 `opened`、`reopened`、`synchronize`、`ready_for_review`，草稿丢弃。`issue_comment` 只收 PR 上新建的、完整提到 `github.trigger_user` 的评论；更长账号和邮箱片段不匹配。
 3. `github.repos` 非空时，仓库不在名单里就忽略。
-4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
+4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/worktree/review/base`，计算唯一共同祖先并固定到 `refs/worktree/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff。宿主先生成有界 `change_manifest`（文件、增删行、风险排序、符号和测试）并作为不可信 JSON 注入；文件列表缺失时模型用 `pr_diff_stat` 分页补齐，再用 `pr_file_diff` 按文件读取。清单失败退回原有工具流程，风险分不代表缺陷判断。
 6. 宿主在模型超时窗口之外调用 `runner.PrepareMemory`：独立 30 秒预算，`projectmem` 按仓库和 head 缓存成功索引，以改动路径/符号增强召回，片段通过 `ReviewInput.Memory` 注入。索引失败只记分类日志，不阻断审查。
 7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
@@ -86,7 +86,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 | 工具 | 作用 |
 | --- | --- |
 | `pr_diff_stat` | 文件列表分页（offset/limit）、增删行数、整份 patch 是否超限 |
-| `pr_file_diff` | 单个文件相对 `refs/review/merge-base` 的 patch |
+| `pr_file_diff` | 单个文件相对 `refs/worktree/review/merge-base` 的 patch |
 | `read_repo_file` | 检出内读文件，可带行号 |
 | `repo_grep` | 只在检出内搜索 |
 | `changed_symbols` | 改动的函数、类型、方法。Go 用 `go/parser`，其他语言用声明行正则 |
