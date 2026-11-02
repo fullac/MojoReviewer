@@ -23,7 +23,10 @@ type Activity struct {
 }
 
 // Activity records queued/running/terminal states in a bounded, atomic snapshot.
-func (s *Store) Activity(a Activity) error {
+func (s *Store) Activity(a Activity) error { return s.Activities(a) }
+
+// Activities 在一次原子写入中保存替换前后回执，避免队列状态只更新一半。
+func (s *Store) Activities(updates ...Activity) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := filepath.Join(filepath.Dir(s.path), "activity.json")
@@ -35,17 +38,19 @@ func (s *Store) Activity(a Activity) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	a.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
-	found := false
-	for i := range rows {
-		if rows[i].ID == a.ID {
-			rows[i] = a
-			found = true
-			break
+	for _, a := range updates {
+		a.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+		found := false
+		for i := range rows {
+			if rows[i].ID == a.ID {
+				rows[i] = a
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		rows = append(rows, a)
+		if !found {
+			rows = append(rows, a)
+		}
 	}
 	if len(rows) > 256 {
 		rows = rows[len(rows)-256:]

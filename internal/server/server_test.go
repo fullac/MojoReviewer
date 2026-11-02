@@ -143,6 +143,7 @@ esac
 	runner := &recordingRunner{}
 	s := New(cfg, nil, st)
 	s.runner = runner
+	s.resolveHead = func(_ context.Context, item github.Review, _ string) (github.Review, error) { return item, nil }
 	return s, runner, apiPath, commentPath
 }
 

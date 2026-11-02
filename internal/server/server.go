@@ -30,13 +30,15 @@ type reviewRunner interface {
 
 // Server 接收 GitHub webhook，串行跑只读审查。
 type Server struct {
-	cfg     config.Config
-	runner  reviewRunner
-	store   *store.Store
-	allowed map[string]bool
-	jobs    chan github.Review
-	mu      sync.Mutex
-	pending map[string]bool
+	cfg         config.Config
+	runner      reviewRunner
+	store       *store.Store
+	allowed     map[string]bool
+	jobs        chan github.Review
+	mu          sync.Mutex
+	pending     map[string]bool
+	queuedAuto  map[string]github.Review
+	resolveHead func(context.Context, github.Review, string) (github.Review, error)
 }
 
 // New 创建服务。jobs 缓冲满时 webhook 返回 429，不丢进无界队列。
@@ -45,7 +47,7 @@ func New(cfg config.Config, runner *agent.Runner, st *store.Store) *Server {
 	for _, repo := range cfg.GitHub.Repos {
 		allowed[repo] = true
 	}
-	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32), pending: map[string]bool{}}
+	return &Server{cfg: cfg, runner: runner, store: st, allowed: allowed, jobs: make(chan github.Review, 32), pending: map[string]bool{}, queuedAuto: map[string]github.Review{}, resolveHead: github.ResolveComment}
 }
 
 // Start 启动 HTTP 服务和单个审查 worker。
@@ -124,20 +126,32 @@ func (s *Server) handleWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if len(s.jobs) == cap(s.jobs) {
+	old, replacing := s.queuedAuto[item.SessionKey]
+	replacing = replacing && item.Comment == "" && s.pending[old.SessionKey+":"+old.HeadSHA]
+	if len(s.jobs) == cap(s.jobs) && !replacing {
 		http.Error(w, "队列已满", http.StatusTooManyRequests)
 		return
 	}
 
-	if err := s.store.Activity(store.Activity{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}); err != nil {
+	updates := []store.Activity{{ID: item.AttemptID, Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA, State: "queued"}}
+	if replacing {
+		updates = append(updates, store.Activity{ID: old.AttemptID, Repo: old.Repo, Number: old.Number, HeadSHA: old.HeadSHA, State: "skipped", Stage: "superseded"})
+	}
+	if err := s.store.Activities(updates...); err != nil {
 		slog.Error("记录排队状态失败", "error", err)
 		http.Error(w, "记录排队状态失败", http.StatusInternalServerError)
 		return
 	}
 	if item.Comment == "" {
+		if replacing {
+			delete(s.pending, old.SessionKey+":"+old.HeadSHA)
+		}
 		s.pending[item.SessionKey+":"+item.HeadSHA] = true
+		s.queuedAuto[item.SessionKey] = *item
 	}
-	s.jobs <- *item
+	if !replacing {
+		s.jobs <- *item
+	}
 	slog.Debug("任务已排队", "pr", item.SessionKey, "attempt", item.AttemptID)
 	w.WriteHeader(http.StatusAccepted)
 	_, _ = w.Write([]byte(`{"status":"queued"}`))
@@ -155,6 +169,18 @@ func (s *Server) worker(ctx context.Context) {
 }
 
 func (s *Server) runOne(ctx context.Context, item github.Review) {
+	// A queued channel entry owns one slot; its latest automatic payload can
+	// be replaced without adding another slot or touching explicit comments.
+	s.mu.Lock()
+	if item.Comment == "" {
+		if latest, ok := s.queuedAuto[item.SessionKey]; ok {
+			if latest.AttemptID != item.AttemptID {
+				item = latest
+			}
+			delete(s.queuedAuto, item.SessionKey)
+		}
+	}
+	s.mu.Unlock()
 	ctx, metrics := observe.Start(ctx)
 	if item.Intent == "" {
 		item.Intent = github.IntentReview
@@ -188,6 +214,28 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "storage"
 		slog.Error("记录运行状态失败", "error", err)
 		return
+	}
+	if automatic {
+		if s.store.HasAutoHead(item.SessionKey, item.HeadSHA) {
+			activity.State, activity.Stage = "skipped", "duplicate"
+			return
+		}
+		activity.Stage = "metadata"
+		resolved, err := s.resolveHead(ctx, item, s.cfg.GitHub.Host)
+		if err != nil {
+			if _, saveErr := s.store.ReserveAutoHead(item.SessionKey, store.Record{Repo: item.Repo, Number: item.Number, HeadSHA: item.HeadSHA}); saveErr != nil {
+				activity.Stage = "storage"
+				return
+			}
+			s.postFailure(ctx, item, "补齐 PR 信息失败", err)
+			return
+		}
+		if resolved.HeadSHA != item.HeadSHA {
+			s.queueCurrentHead(resolved)
+			activity.State, activity.Stage = "skipped", "superseded"
+			return
+		}
+		item = resolved
 	}
 	// Once an automatic attempt actually starts, reserve its SHA even if setup fails.
 	// Merely queued attempts remain recoverable after a process restart.
