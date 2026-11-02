@@ -100,6 +100,7 @@ type ReviewInput struct {
 	Memory    projectmem.ContextBundle
 	Manifest  *review.Manifest
 	Batch     *review.Batch
+	Previous  *review.History
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
@@ -153,7 +154,11 @@ func (r *Runner) reviewOne(ctx context.Context, input ReviewInput) (ReviewResult
 	groundDone := observe.Stage(ctx, "ground")
 	// Model timeout must not prevent checking already collected notes.
 	groundCtx, cancelGround := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
-	grounded, rejected, groundErr := review.Ground(groundCtx, input.WorkDir, notes.Snapshot(), reads.evidence())
+	var previous []review.Finding
+	if input.Previous != nil {
+		previous = input.Previous.Findings
+	}
+	grounded, rejected, groundErr := review.Ground(groundCtx, input.WorkDir, notes.Snapshot(), reads.evidence(), previous...)
 	cancelGround()
 	groundDone()
 	observe.From(ctx).Ground(rejected)
@@ -366,6 +371,9 @@ func prompt(input ReviewInput) string {
 	b.WriteString("3. 按需调用 changed_symbols 看动了哪些函数和类型；按需调用 repo_grep 定位定义和调用方，再用 read_repo_file 读取相关行段。\n")
 	b.WriteString("4. 按需调用 tests_around 找改动附近的测试，确认行为有没有被覆盖。\n")
 	b.WriteString("5. 每发现一条问题就调用 review_note，填写简短 title 与 Markdown body；遵守系统提示中的评论表达规则。severity 只能是「严重」或「建议」。\n\n")
+	if input.Previous != nil {
+		b.WriteString("previous_review 是上一轮结构化发现和提交间增量文件列表，不能当成当前事实。逐条复核历史发现：调用 read_repo_file 或 pr_file_diff 读取当前依据后，调用 review_note 并附 finding_id 与 status（persistent 仍存在，resolved 已解决）。已解决也须用三项正文说明当前依据与无需进一步修改的原因；禁止因本轮未发现就声称已解决。新增问题不填 finding_id。\n")
+	}
 	b.WriteString("主线证据足够后必须记录 review_note 并结束；没有发现问题则明确结束，不为凑结论反复读文件。无法核实的范围应明确说明，不能宣称完整审查。\n")
 	b.WriteString("规则：\n")
 	b.WriteString("1. 路径只能落在这次检出内。工作区是 detached checkout，可能是 shallow。refs/worktree/review/base 保存 PR base 提交，比较基线用 refs/worktree/review/merge-base，不要运行 git diff main...HEAD，也不要假定本地存在 base 分支。\n")
@@ -378,6 +386,7 @@ func prompt(input ReviewInput) string {
 // text cannot close the data block or inject another host instruction section.
 func writePRData(b *strings.Builder, input ReviewInput) {
 	data := struct {
+		Previous       *review.History  `json:"previous_review,omitempty"`
 		Repo           string           `json:"repo"`
 		Number         int              `json:"number"`
 		Title          string           `json:"title"`
@@ -389,7 +398,7 @@ func writePRData(b *strings.Builder, input ReviewInput) {
 		ChangeManifest *review.Manifest `json:"change_manifest,omitempty"`
 		Batch          *review.Batch    `json:"review_batch,omitempty"`
 	}{
-		Repo: input.Review.Repo, Number: input.Review.Number,
+		Previous: input.Previous, Repo: input.Review.Repo, Number: input.Review.Number,
 		Title: input.Review.Title, HeadBranch: input.Review.HeadBranch,
 		BaseBranch: input.Review.BaseBranch, HeadSHA: input.Review.HeadSHA,
 		RequestedFocus: reviewNote(input.Review), ProjectContext: input.Memory.Render(), ChangeManifest: input.Manifest, Batch: input.Batch,

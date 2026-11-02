@@ -67,7 +67,7 @@ config.example.json          可提交的配置样例（无真实密钥）
 4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/worktree/review/base`，计算唯一共同祖先并固定到 `refs/worktree/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
 5. 提示词**不**预置整份 diff。宿主先生成有界 `change_manifest`（文件、增删行、风险排序、符号和测试）并作为不可信 JSON 注入；文件列表缺失时模型用 `pr_diff_stat` 分页补齐，再用 `pr_file_diff` 按文件读取。清单失败退回原有工具流程，风险分不代表缺陷判断。
 6. 宿主在模型超时窗口之外调用 `runner.PrepareMemory`：独立 30 秒预算，`projectmem` 按仓库和 head 缓存成功索引，以改动路径/符号增强召回，片段通过 `ReviewInput.Memory` 注入。索引失败只记分类日志，不阻断审查。
-7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
+7. `runner.Review` 绑定工具、跑一轮。新 head 开新会话，同 head 显式跟进可复用 `reviews.json` 里的 session。大 PR 初次审查分批串行，每批独立会话，共享总预算。
 8. `review.PostComment` 发回 PR。
 
 ## fix 路径
@@ -148,3 +148,11 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。
+
+## Harness 宿主补充契约
+
+- 自动队列按 PR 合并尚未执行的载荷；执行前核实远端 head，过时回执记 skipped。显式评论独立排队，仍只有一个 worker 和 32 个位置。
+- 发布前对正常及中断笔记执行确定性依据校验，记录 ground 耗时和拒绝数量；位置可定位不代表缺陷语义已证明。
+- 会话 head、自动尝试历史、成功发布的 reviewed_sha 分开保存。新 head 只注入有界结构化发现，历史缺席不代表已解决；历史状态变化必须重新读取证据。
+- reviewed_sha 和发现摘要仅在模型正常结束且评论发布成功后推进。失败轮次保留原已审基线。
+- Git 对象共享，PR 工作目录和 refs/worktree/review/* 引用隔离；脏检出拒绝复用并保留现场。旧克隆目录不自动删除。

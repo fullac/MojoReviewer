@@ -16,6 +16,7 @@ import (
 type ReadRange struct {
 	Path       string
 	Start, End int
+	Old        bool
 }
 
 var inlineCode = regexp.MustCompile("`([^`\\n]+)`")
@@ -23,7 +24,7 @@ var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-
 
 // Ground 校验正常和中断审查的笔记。hunk 指 Git 补丁中的改动行段。
 // 删除文件的行号以 merge-base 为准；其他文件以 head 为准。
-func Ground(ctx context.Context, dir string, notes []Note, reads []ReadRange) (*Notes, int, error) {
+func Ground(ctx context.Context, dir string, notes []Note, reads []ReadRange, previous ...Finding) (*Notes, int, error) {
 	out := &Notes{}
 	if len(notes) == 0 {
 		return out, 0, nil
@@ -42,19 +43,33 @@ func Ground(ctx context.Context, dir string, notes []Note, reads []ReadRange) (*
 	}
 	rejected := 0
 	for _, n := range notes {
-		if !groundNote(ctx, ToolScope{Dir: dir}, changed, n, reads) {
+		if !groundNote(ctx, ToolScope{Dir: dir}, changed, n, reads, previous) {
 			rejected++
 			continue
 		}
-		if err := out.AddWithTitle(n.Severity, n.Path, n.Line, n.Title, n.Body); err != nil {
+		if err := out.AddFinding(n); err != nil {
 			rejected++
 		}
 	}
 	return out, rejected, nil
 }
 
-func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n Note, reads []ReadRange) bool {
-	if n.Line < 1 || !changed[n.Path] || filepath.IsAbs(n.Path) {
+func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n Note, reads []ReadRange, previous []Finding) bool {
+	known := false
+	previousSHA := ""
+	for _, f := range previous {
+		if n.FindingID == f.ID && f.Status != "resolved" && n.Path == f.Note.Path {
+			known = true
+			previousSHA = f.VerifiedSHA
+		}
+	}
+	if n.FindingID != "" && !known {
+		return false
+	}
+	if n.Status == "resolved" && !known {
+		return false
+	}
+	if n.Line < 1 || (!changed[n.Path] && !known) || filepath.IsAbs(n.Path) {
 		return false
 	}
 	rel, err := scope.clean(n.Path)
@@ -99,15 +114,24 @@ func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n
 			located = true
 		}
 	}
-	if !deleted {
-		for _, r := range reads {
-			if r.Path == n.Path && n.Line >= r.Start && n.Line <= r.End {
-				located = true
-			}
+	read := false
+	for _, r := range reads {
+		if r.Path == n.Path && r.Old == deleted && n.Line >= r.Start && n.Line <= r.End {
+			read = true
 		}
+	}
+	located = located || read
+	if known && !read {
+		return false
 	}
 	if !located {
 		return false
+	}
+	if n.Status == "resolved" && commitID.MatchString(previousSHA) {
+		// A resolved finding may name an identifier that was removed by the fix.
+		if old, err := manifestGit(ctx, scope.Dir, 4<<20, "show", previousSHA+":"+n.Path); err == nil {
+			source += "\n" + old
+		}
 	}
 	// Only claims about existing code are checked. Proposed names in the fix
 	// item are allowed to be new. This is a syntactic check, not a semantic judge.
@@ -144,6 +168,51 @@ func ReturnedRanges(path, output string) []ReadRange {
 			out[len(out)-1].End = n
 		} else {
 			out = append(out, ReadRange{Path: path, Start: n, End: n})
+		}
+	}
+	return out
+}
+
+// ReturnedPatchRanges tracks both sides of the patch actually sent to the model.
+func ReturnedPatchRanges(path, output string) []ReadRange {
+	var out []ReadRange
+	header := regexp.MustCompile(`^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@`)
+	old, current := 0, 0
+	active := false
+	lines := strings.Split(output, "\n")
+	add := func(n int, isOld bool) {
+		if n > 0 {
+			out = append(out, ReadRange{Path: path, Start: n, End: n, Old: isOld})
+		}
+	}
+	for i, line := range lines {
+		if m := header.FindStringSubmatch(line); m != nil {
+			old, _ = strconv.Atoi(m[1])
+			current, _ = strconv.Atoi(m[2])
+			active = true
+			continue
+		}
+		if !active || line == "" {
+			continue
+		}
+		if i+2 < len(lines) && lines[i+1] == "" && strings.HasPrefix(lines[i+2], "…输出过长") {
+			break
+		}
+		switch line[0] {
+		case ' ':
+			add(old, true)
+			add(current, false)
+			old++
+			current++
+		case '-':
+			add(old, true)
+			old++
+		case '+':
+			add(current, false)
+			current++
+		case '\\':
+		default:
+			active = false
 		}
 	}
 	return out

@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,10 +11,12 @@ import (
 
 // Record 记住一个 PR 审查到哪个提交、用哪个 LuckyAgent 会话。
 type Record struct {
-	Repo      string `json:"repo"`
-	Number    int    `json:"number"`
-	HeadSHA   string `json:"head_sha"`
-	SessionID string `json:"session_id"`
+	ReviewedSHA string           `json:"reviewed_sha,omitempty"`
+	Findings    []review.Finding `json:"findings,omitempty"`
+	Repo        string           `json:"repo"`
+	Number      int              `json:"number"`
+	HeadSHA     string           `json:"head_sha"`
+	SessionID   string           `json:"session_id"`
 	// AutoHeads records started automatic attempts, independently of the latest
 	// session head. Explicit comment/GUI reviews do not consume another attempt.
 	AutoHeads []string `json:"auto_heads"`
@@ -60,6 +63,7 @@ func (s *Store) Get(key string) (Record, bool) {
 	defer s.mu.Unlock()
 	rec, ok := s.data[key]
 	rec.AutoHeads = slices.Clone(rec.AutoHeads)
+	rec.Findings = slices.Clone(rec.Findings)
 	return rec, ok
 }
 
@@ -79,18 +83,21 @@ func (s *Store) ReserveAutoHead(key string, rec Record) (bool, error) {
 	if slices.Contains(existing.AutoHeads, rec.HeadSHA) {
 		return false, nil
 	}
-	rec.AutoHeads = append(slices.Clone(existing.AutoHeads), rec.HeadSHA)
-	if rec.SessionID == "" {
-		rec.SessionID = existing.SessionID
+	existing.AutoHeads = append(slices.Clone(existing.AutoHeads), rec.HeadSHA)
+	if existing.Repo == "" {
+		existing.Repo, existing.Number = rec.Repo, rec.Number
 	}
-	return true, s.putLocked(key, rec)
+	// Reservation cannot relabel the old session as belonging to the new head.
+	return true, s.putLocked(key, existing)
 }
 
 // Put 保存记录。同一个提交重复审查时仍更新会话 ID。
 func (s *Store) Put(key string, rec Record) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	// Session updates must not discard reservations for older heads.
+	// Session updates must not discard reservations or completed review history.
+	rec.ReviewedSHA = s.data[key].ReviewedSHA
+	rec.Findings = slices.Clone(s.data[key].Findings)
 	rec.AutoHeads = slices.Clone(s.data[key].AutoHeads)
 	if rec.AutoHeads == nil {
 		rec.AutoHeads = []string{}
@@ -140,4 +147,14 @@ func atomicWrite(path string, raw []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// SaveReviewed advances only a completed review; model/publish failure keeps the prior baseline.
+func (s *Store) SaveReviewed(key, sha string, findings []review.Finding) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec := s.data[key]
+	rec.ReviewedSHA = sha
+	rec.Findings = slices.Clone(findings)
+	return s.putLocked(key, rec)
 }

@@ -311,9 +311,10 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	input := agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
-		SessionID: existing.SessionID,
+		SessionID: sessionForHead(existing, item.HeadSHA),
 		Manifest:  manifest,
 	}
+	input.Previous = review.PreviousReview(ctx, ws.Dir, existing.ReviewedSHA, existing.Findings)
 	activity.Stage = "memory"
 	input.Memory = s.runner.PrepareMemory(ctx, input)
 	activity.Stage = "model"
@@ -337,6 +338,13 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		// 保留 model/failed，不把“失败说明已发布”标记成审查完成。
 		return
 	}
+	findings := review.Reconcile(existing.Findings, result.Notes, item.HeadSHA)
+	if existing.ReviewedSHA != "" {
+		result.Text = review.RenderChanges(findings)
+		if result.Rejected > 0 {
+			result.Text += fmt.Sprintf("\n\n宿主未发布 %d 条无法核验依据的意见。", result.Rejected)
+		}
+	}
 	if !storageFailed {
 		activity.Stage = "publish"
 	}
@@ -344,6 +352,13 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	if err != nil {
 		slog.Error("发布评论失败", "pr", item.SessionKey, "error", err)
 		return
+	}
+	if !storageFailed {
+		if err := s.store.SaveReviewed(item.SessionKey, item.HeadSHA, findings); err != nil {
+			storageFailed = true
+			activity.State, activity.Stage = "failed", "storage"
+			slog.Error("保存审查摘要失败", "pr", item.SessionKey)
+		}
 	}
 	if !storageFailed {
 		activity.State = "completed"
@@ -372,7 +387,7 @@ func (s *Server) runFix(ctx context.Context, item github.Review, a *store.Activi
 	input := agent.ReviewInput{
 		Review:    item,
 		WorkDir:   ws.Dir,
-		SessionID: existing.SessionID,
+		SessionID: sessionForHead(existing, item.HeadSHA),
 		Manifest:  manifest,
 	}
 	a.Stage = "memory"
@@ -550,4 +565,11 @@ func (s *Server) postObserved(ctx context.Context, item github.Review, body stri
 	done := observe.Stage(ctx, "publish")
 	defer done()
 	return s.postComment(item, body)
+}
+
+func sessionForHead(existing store.Record, head string) string {
+	if existing.HeadSHA == head {
+		return existing.SessionID
+	}
+	return ""
 }

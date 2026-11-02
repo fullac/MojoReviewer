@@ -38,6 +38,9 @@ func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, 
 			p.seen = make(map[readKey]bool)
 		}
 		p.seen[key] = true
+		if key.kind == "pr_file_diff" {
+			p.ranges = append(p.ranges, review.ReturnedPatchRanges(key.path, out)...)
+		}
 		if key.kind == "read_repo_file" {
 			p.ranges = append(p.ranges, review.ReturnedRanges(key.path, out)...)
 		}

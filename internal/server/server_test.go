@@ -180,7 +180,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
+func TestCommentReviewStartsFreshOnNewHeadAndReusesSameHead(t *testing.T) {
 	origin := t.TempDir()
 	runGit(t, origin, "init", "-b", "main")
 	runGit(t, origin, "config", "user.name", "mojo")
@@ -226,7 +226,7 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("评论触发未进入审查: %+v", runner.inputs)
 	}
 	input := runner.inputs[0]
-	if input.SessionID != "existing-session" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
+	if input.SessionID != "" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
 		t.Fatalf("审查上下文错误: %+v", input)
 	}
 	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/worktree/review/base") != base {
@@ -259,6 +259,9 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	s.runOne(context.Background(), item)
 	if len(runner.inputs) != 2 {
 		t.Fatal("完整的 PR 任务未正常审查")
+	}
+	if runner.inputs[1].SessionID != "existing-session" || runner.inputs[1].Previous == nil || runner.inputs[1].Previous.ReviewedSHA != head {
+		t.Fatal("same-head followup lost session or reviewed baseline")
 	}
 	if _, err := os.Stat(apiPath); !os.IsNotExist(err) {
 		t.Fatalf("自动 PR 事件不应补拉元数据: %v", err)

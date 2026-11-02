@@ -26,13 +26,17 @@ func (r *Runner) Review(ctx context.Context, input ReviewInput) (ReviewResult, e
 	if err != nil {
 		return ReviewResult{}, &ReviewFailure{Reason: "审查批次准备失败，审查未完成。", cause: err}
 	}
-	if len(batches) == 1 {
+	if len(batches) == 1 || input.SessionID != "" {
 		result, err := r.reviewOne(ctx, input)
 		observe.From(ctx).Batches(1, boolInt(err == nil))
 		if err == nil {
-			result.CoveredFiles = append([]string(nil), batches[0].Files...)
+			for _, b := range batches {
+				result.CoveredFiles = append(result.CoveredFiles, b.Files...)
+			}
 		} else {
-			result.Unreviewed = append([]string(nil), batches[0].Files...)
+			for _, b := range batches {
+				result.Unreviewed = append(result.Unreviewed, b.Files...)
+			}
 		}
 		return result, err
 	}
@@ -72,10 +76,10 @@ func executeBatches(ctx context.Context, input ReviewInput, batches []review.Bat
 		result.Reads = append(result.Reads, part.Reads...)
 		result.Rejected += part.Rejected
 		for _, n := range part.Notes {
-			key := fmt.Sprintf("%s:%d:%s:%s", n.Path, n.Line, n.Title, n.Body)
+			key := fmt.Sprintf("%s:%d:%s:%s:%s:%s", n.Path, n.Line, n.Title, n.Body, n.FindingID, n.Status)
 			if !seen[key] {
 				seen[key] = true
-				_ = merged.AddWithTitle(n.Severity, n.Path, n.Line, n.Title, n.Body)
+				_ = merged.AddFinding(n)
 			}
 		}
 		if err != nil {
