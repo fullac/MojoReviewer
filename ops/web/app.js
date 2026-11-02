@@ -54,6 +54,7 @@ function renderMetrics(td, item) {
   if(Object.hasOwn(m.stages_ms||{},'ground')){
     const line=document.createElement('div');line.textContent='依据校验未通过 '+(m.ground_rejected||0)+' 条';details.append(line);
   }
+  if(m.batches_total){const line=document.createElement('div');line.textContent='批次完成 '+m.batches_completed+'/'+m.batches_total;details.append(line);}
   if(m.usage){
     const line=document.createElement('div');
     line.textContent='输入 '+m.usage.input_tokens+' / 输出 '+m.usage.output_tokens+' / 缓存命中 '+m.usage.cached_input_tokens;

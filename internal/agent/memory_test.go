@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -60,6 +61,11 @@ func TestMemoryPreparationDoesNotConsumeModelDeadline(t *testing.T) {
 	runner.memory = &projectmem.Indexer{Store: st, Agent: memory}
 	work := t.TempDir()
 	os.WriteFile(filepath.Join(work, "README.md"), []byte("documentation"), 0600)
+	for _, args := range [][]string{{"init"}, {"config", "user.name", "test"}, {"config", "user.email", "test@example.test"}, {"add", "."}, {"commit", "-m", "fixture"}, {"update-ref", "refs/review/merge-base", "HEAD"}} {
+		if out, err := exec.Command("git", append([]string{"-C", work}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git: %v %s", err, out)
+		}
+	}
 	input := ReviewInput{WorkDir: work, Review: github.Review{Repo: "acme/web", HeadSHA: "A", SessionKey: "test"}, Manifest: &review.Manifest{Files: []review.ChangedFile{{Path: "auth.go", Symbols: []review.ChangedSymbol{{Name: "Check"}}}}}}
 	ctx, metrics := observe.Start(context.Background())
 	input.Memory = runner.PrepareMemory(ctx, input)

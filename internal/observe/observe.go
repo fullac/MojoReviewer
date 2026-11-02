@@ -23,16 +23,18 @@ type Tool struct {
 }
 
 type Snapshot struct {
-	GroundRejected int              `json:"ground_rejected"`
-	MemoryCacheHit *bool            `json:"memory_cache_hit,omitempty"`
-	MemoryFiles    int              `json:"memory_files"`
-	StartedAt      string           `json:"started_at"`
-	TotalMS        int64            `json:"total_ms"`
-	Stages         map[string]int64 `json:"stages_ms"`
-	Iterations     int              `json:"iterations"`
-	Usage          *Usage           `json:"usage"`
-	ToolCount      int              `json:"tool_count"`
-	Tools          []Tool           `json:"tools"`
+	BatchesTotal     int              `json:"batches_total"`
+	BatchesCompleted int              `json:"batches_completed"`
+	GroundRejected   int              `json:"ground_rejected"`
+	MemoryCacheHit   *bool            `json:"memory_cache_hit,omitempty"`
+	MemoryFiles      int              `json:"memory_files"`
+	StartedAt        string           `json:"started_at"`
+	TotalMS          int64            `json:"total_ms"`
+	Stages           map[string]int64 `json:"stages_ms"`
+	Iterations       int              `json:"iterations"`
+	Usage            *Usage           `json:"usage"`
+	ToolCount        int              `json:"tool_count"`
+	Tools            []Tool           `json:"tools"`
 }
 
 type Recorder struct {
@@ -149,4 +151,14 @@ func (r *Recorder) Ground(rejected int) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.data.GroundRejected += rejected
+}
+
+func (r *Recorder) Batches(total, done int) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.data.BatchesTotal = total
+	r.data.BatchesCompleted = done
 }
