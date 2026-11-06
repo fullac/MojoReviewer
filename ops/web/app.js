@@ -5,6 +5,9 @@ const $ = selector => document.querySelector(selector);
 const labels = {
   stopped:'服务已停止',starting:'正在启动',running:'服务运行中',recovering:'正在恢复入口',error:'等待恢复',queued:'排队中',running_review:'审查中',completed:'已发布',failed:'失败',interrupted:'已中断',skipped:'已跳过'
 };
+function reviewerReady() {
+  return !!state.reviewer_ready;
+}
 function message(text, bad=false) {
   const el=$('#message');
   el.textContent=text;
@@ -35,7 +38,7 @@ async function refresh() {
     $('#connection').className='badge good';
     $('#phase').textContent=labels[state.phase]||state.phase;
     $('#error').textContent=state.error||' ';
-    $('#reviewer').textContent=state.pids.reviewer?'PID '+state.pids.reviewer:'已停止';
+    $('#reviewer').textContent=state.pids.reviewer==='external'?'外部进程':state.pids.reviewer?'PID '+state.pids.reviewer:'已停止';
     $('#tunnel').textContent=state.pids.tunnel?'PID '+state.pids.tunnel:'已停止';
     $('#probe').textContent=state.phase==='running'?'连续失败 '+state.health_failures+'/3':'启动后每 30 秒签名探测';
     $('#queue').textContent=state.activity.filter(a=>a.state==='queued').length+' 等待';
@@ -77,7 +80,7 @@ async function refresh() {
       }
       const retry=document.createElement('button');
       retry.textContent='重新审查';
-      retry.disabled=state.phase!=='running'||busy;
+      retry.disabled=!reviewerReady()||busy;
       retry.addEventListener('click',()=>action('retry',{
         repo:item.repo,number:item.number
       }));
@@ -89,7 +92,7 @@ async function refresh() {
     });
     $('#config-note').textContent=state.desired?'先在「服务与审查」中停止服务，再修改配置':'';
     $('#config-form button').disabled=state.desired||busy;
-    $('#retry-form button').disabled=state.phase!=='running'||busy;
+    $('#retry-form button').disabled=!reviewerReady()||busy;
   }catch(error){
     $('#connection').textContent='管理器断开';
     $('#connection').className='badge bad';
