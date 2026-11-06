@@ -15,10 +15,11 @@ type reviewTools struct {
 	scope review.ToolScope
 	notes *review.Notes
 	reads *readProgress
+	trace *progressTrace
 }
 
-func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress) error {
-	tools := reviewTools{scope: scope, notes: notes, reads: reads}
+func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress, trace *progressTrace) error {
+	tools := reviewTools{scope: scope, notes: notes, reads: reads, trace: trace}
 	specs := []sdk.ToolSpec{
 		{
 			Name:        "pr_diff_stat",
@@ -105,6 +106,20 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	return nil
 }
 
+func (t reviewTools) call(name string, args map[string]any, fn func() (string, error)) (string, error) {
+	out, err := fn()
+	if t.trace != nil {
+		kind := "tool"
+		if name == "review_note" && err == nil {
+			kind = "note"
+		} else if err == nil && strings.HasPrefix(out, "本轮已读") {
+			kind = "receipt"
+		}
+		t.trace.add(kind, toolSummary(name, args, out, err))
+	}
+	return out, err
+}
+
 func (t reviewTools) diffStat(args map[string]any) (string, error) {
 	offset, limit := argInt(args, "offset"), argInt(args, "limit")
 	if limit == 0 {
@@ -113,15 +128,19 @@ func (t reviewTools) diffStat(args map[string]any) (string, error) {
 	if limit > 200 {
 		limit = 200
 	}
-	return t.reads.read(readKey{kind: "pr_diff_stat", start: offset, end: limit}, func() (string, error) {
-		return t.scope.StatPage(offset, limit)
+	return t.call("pr_diff_stat", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "pr_diff_stat", start: offset, end: limit}, func() (string, error) {
+			return t.scope.StatPage(offset, limit)
+		})
 	})
 }
 
 func (t reviewTools) fileDiff(args map[string]any) (string, error) {
 	path := argString(args, "path")
-	return t.reads.read(readKey{kind: "pr_file_diff", path: readPath(t.scope.Dir, path)}, func() (string, error) {
-		return t.scope.FileDiff(path)
+	return t.call("pr_file_diff", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "pr_file_diff", path: readPath(t.scope.Dir, path)}, func() (string, error) {
+			return t.scope.FileDiff(path)
+		})
 	})
 }
 
@@ -134,28 +153,38 @@ func (t reviewTools) readFile(args map[string]any) (string, error) {
 	if end <= 0 || end-start >= 400 {
 		end = start + 399
 	}
-	return t.reads.read(readKey{kind: "read_repo_file", path: readPath(t.scope.Dir, path), start: start, end: end}, func() (string, error) {
-		return t.scope.ReadFile(path, start, end)
+	return t.call("read_repo_file", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "read_repo_file", path: readPath(t.scope.Dir, path), start: start, end: end}, func() (string, error) {
+			return t.scope.ReadFile(path, start, end)
+		})
 	})
 }
 
 func (t reviewTools) grep(args map[string]any) (string, error) {
-	return t.scope.Grep(argString(args, "pattern"), argString(args, "glob"))
+	return t.call("repo_grep", args, func() (string, error) {
+		return t.scope.Grep(argString(args, "pattern"), argString(args, "glob"))
+	})
 }
 
-func (t reviewTools) symbols(_ map[string]any) (string, error) {
-	return t.scope.ChangedSymbols()
+func (t reviewTools) symbols(args map[string]any) (string, error) {
+	return t.call("changed_symbols", args, func() (string, error) {
+		return t.scope.ChangedSymbols()
+	})
 }
 
 func (t reviewTools) note(args map[string]any) (string, error) {
-	if err := t.notes.AddWithTitle(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "title"), argString(args, "body")); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil
+	return t.call("review_note", args, func() (string, error) {
+		if err := t.notes.AddWithTitle(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "title"), argString(args, "body")); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil
+	})
 }
 
 func (t reviewTools) tests(args map[string]any) (string, error) {
-	return t.scope.TestsAround(argString(args, "path"))
+	return t.call("tests_around", args, func() (string, error) {
+		return t.scope.TestsAround(argString(args, "path"))
+	})
 }
 
 func argString(args map[string]any, key string) string {

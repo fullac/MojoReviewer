@@ -199,6 +199,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	slog.Info("开始审查", "pr", item.SessionKey)
+	s.progress(id, store.ProgressEvent{Kind: "start", Summary: "审查开始"})
 	if err := github.ReactStarted(ctx, item, s.cfg.GitHub.Host); err != nil {
 		slog.Warn("添加开始表情失败，继续处理任务", "pr", item.SessionKey, "error", err)
 	}
@@ -207,6 +208,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "metadata"
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
+			s.failProgress(id, "补齐 PR 信息失败", err)
 			s.postFailure(item, "补齐 PR 信息失败", err)
 			return
 		}
@@ -242,9 +244,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	}
 	ws, err := review.PrepareWithBase(s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	if err != nil {
+		s.failProgress(id, "准备仓库失败", err)
 		s.postFailure(item, "准备仓库失败", err)
 		return
 	}
+	s.progress(id, store.ProgressEvent{Kind: "checkout", Summary: "检出完成"})
 	existing, _ := s.store.Get(item.SessionKey)
 	activity.Stage = "model"
 	// Diff is intentionally empty: the model pulls pr_diff_stat / pr_file_diff (issue #21).
@@ -252,6 +256,8 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		Review:    item,
 		WorkDir:   ws.Dir,
 		SessionID: existing.SessionID,
+		AttemptID: id,
+		DataDir:   s.cfg.DataDir,
 	})
 	storageFailed := false
 	if result.SessionID != "" {
@@ -262,6 +268,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	if err != nil {
+		s.progress(id, store.ProgressEvent{Kind: "fail", Summary: "model：" + modelProgress(err)})
 		slog.Warn("审查未完成，准备发布失败说明", "pr", item.SessionKey, "reason", agent.ModelFailureLog(err))
 		commentURL, postErr := s.postComment(item, reviewFailureComment(result, err))
 		if postErr != nil {
@@ -285,6 +292,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "published"
 	}
 	activity.CommentURL = commentURL
+	s.progress(id, store.ProgressEvent{Kind: "publish", Summary: "已发布"})
 	slog.Info("审查结果已发布", "pr", item.SessionKey, "session_saved", !storageFailed)
 }
 

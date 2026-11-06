@@ -94,7 +94,7 @@ func TestLockToolsToReviewOnly(t *testing.T) {
 	}
 	notes := &review.Notes{}
 	scope := review.ToolScope{Dir: t.TempDir()}
-	if err := registerReviewTools(agent, scope, notes, nil); err != nil {
+	if err := registerReviewTools(agent, scope, notes, nil, nil); err != nil {
 		t.Fatalf("registerReviewTools: %v", err)
 	}
 	// A preceding optional fix turn must not leave write tools enabled for review.
@@ -177,7 +177,7 @@ func TestLockToolsToFixMode(t *testing.T) {
 
 	notes := &review.Notes{}
 	scope := review.ToolScope{Dir: t.TempDir()}
-	if err := registerReviewTools(agent, scope, notes, nil); err != nil {
+	if err := registerReviewTools(agent, scope, notes, nil, nil); err != nil {
 		t.Fatalf("registerReviewTools: %v", err)
 	}
 	if err := lockToolsToFixMode(agent); err != nil {
