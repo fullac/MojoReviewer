@@ -3,6 +3,7 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +36,8 @@ func TestManagedReviewLoop(t *testing.T) {
 		{name: "notes_then_finish", calls: 2, noted: true},
 		{name: "invalid_note_then_correct", calls: 3, noted: true},
 		{name: "zero_notes", calls: 1},
+		{name: "empty_completion", calls: 1, reason: "模型空回复"},
+		{name: "fix_empty_completion", calls: 1, fix: true},
 		{name: "repeated_reads", calls: 6, reason: "重复读取", noted: true},
 		{name: "iteration_limit", calls: 30, reason: "迭代上限", noted: true},
 		{name: "timeout", calls: 2, reason: "超时", noted: true},
@@ -94,6 +97,24 @@ func TestManagedReviewLoop(t *testing.T) {
 					}
 				}
 				call := requests.Add(1)
+				if tc.name == "empty_completion" || tc.name == "fix_empty_completion" {
+					writeLoopResponse(w, req.Stream, "I couldn't produce a complete answer this round. Please retry.", nil)
+					return
+				}
+				if tc.name == "notes_then_finish" && call > 2 {
+					found := false
+					for _, m := range req.Messages {
+						if strings.Contains(m.Content, "<untrusted_pr_data>") {
+							found = true
+						}
+						if m.Content == "继续前台任务 tq-999" {
+							t.Error("legacy checkpoint resumed")
+						}
+					}
+					if !found {
+						t.Error("reused session lost the normal review prompt")
+					}
+				}
 				if tc.name == "timeout" && call > 1 {
 					<-r.Context().Done()
 					return
@@ -171,7 +192,11 @@ func TestManagedReviewLoop(t *testing.T) {
 				}
 			}
 			if tc.fix {
-				if !errors.Is(err, errRepeatedToolLoop) || result.Text != "" {
+				expected := errRepeatedToolLoop
+				if tc.name == "fix_empty_completion" {
+					expected = errEmptyModelResponse
+				}
+				if !errors.Is(err, expected) || result.Text != "" {
 					t.Fatalf("incomplete fix must fail before publication: %+v %v", result, err)
 				}
 			} else if tc.reason == "" {
@@ -210,12 +235,24 @@ func TestManagedReviewLoop(t *testing.T) {
 			}
 			if tc.name == "notes_then_finish" {
 				input.SessionID = result.SessionID
+				legacyDir := filepath.Join(home, "runtime", "foreground")
+				if err := os.MkdirAll(legacyDir, 0700); err != nil {
+					t.Fatal(err)
+				}
+				legacyPath := filepath.Join(legacyDir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(result.SessionID))))
+				legacy := []byte(`{"tasks":[{"id":"tq-999","state":"blocked"}]}`)
+				if err := os.WriteFile(legacyPath, legacy, 0600); err != nil {
+					t.Fatal(err)
+				}
 				resumed, err := runner.Review(context.Background(), input)
 				if err != nil || resumed.SessionID != result.SessionID || resumed.Noted || !strings.Contains(resumed.Text, "未记录审查意见") {
 					t.Fatalf("session reuse leaked prior notes: %+v %v", resumed, err)
 				}
 				if verifications.Load() != 0 {
 					t.Fatal("session reuse invoked completion verifier")
+				}
+				if raw, err := os.ReadFile(legacyPath); err != nil || string(raw) != string(legacy) {
+					t.Fatal("legacy checkpoint changed", err)
 				}
 			}
 		})
