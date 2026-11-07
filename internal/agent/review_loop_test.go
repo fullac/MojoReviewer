@@ -21,6 +21,7 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
 	"github.com/mojoreviewer/mojoreviewer/internal/observe"
 	"github.com/mojoreviewer/mojoreviewer/internal/review"
+	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
 func TestManagedReviewLoop(t *testing.T) {
@@ -138,6 +139,8 @@ func TestManagedReviewLoop(t *testing.T) {
 			}
 			input := ReviewInput{WorkDir: dir, Review: github.Review{Repo: "acme/web", Number: 7, SessionKey: "acme/web#7"}}
 			if tc.name == "notes_then_finish" {
+				input.DataDir = t.TempDir()
+				input.AttemptID = "github:harness-progress"
 				input.Manifest = &review.Manifest{TotalFiles: 1, Complete: true, Files: []review.ChangedFile{{Path: "a.go", Added: 1}}}
 			}
 			ctx, metrics := observe.Start(context.Background())
@@ -153,6 +156,19 @@ func TestManagedReviewLoop(t *testing.T) {
 			}
 			if tc.name == "notes_then_finish" && (snapshot.Usage == nil || snapshot.Usage.Total != 24 || snapshot.ToolCount != 1 || snapshot.Tools[0].Name != "review_note") {
 				t.Fatalf("wrong model accounting: %+v", snapshot)
+			}
+			if tc.name == "notes_then_finish" {
+				// 合并主线后，记录发现仍须同时产生进度回执与 Harness 统计。
+				events, readErr := store.ReadProgress(input.DataDir, input.AttemptID)
+				found := false
+				for _, event := range events {
+					if event.Kind == "note" && strings.Contains(event.Summary, "review_note a.go") {
+						found = true
+					}
+				}
+				if readErr != nil || !found {
+					t.Fatalf("harness note lost progress event: %+v %v", events, readErr)
+				}
 			}
 			if tc.fix {
 				if !errors.Is(err, errRepeatedToolLoop) || result.Text != "" {
