@@ -18,6 +18,7 @@ import (
 
 // Runner 在进程内跑一个 LuckyAgent，全局只用一个模型。
 type Runner struct {
+	model      string
 	agent      *sdk.Agent
 	timeout    time.Duration
 	memory     *projectmem.Indexer
@@ -47,7 +48,7 @@ func New(cfg config.AgentConfig) (*Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Runner{agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
+	return &Runner{model: safeModelLabel(cfg.Model, cfg.APIKey), agent: agent, timeout: cfg.TaskTimeout, fixEnabled: cfg.FixEnabled}, nil
 }
 
 // FixEnabled 报告进程是否允许 fix 可写会话。
@@ -193,6 +194,7 @@ func (r *Runner) runModel(ctx context.Context, sessionID, message string) (strin
 	lhagent.ApplyAgentLoopConfig(&cfg, inner.Config().Get().Agent)
 	cfg.Foreground = false
 	result, err := inner.RunLoopWithSession(ctx, sess, message, cfg)
+	err = classifyUpstream(err, r.model)
 	if result == nil {
 		if err == nil {
 			err = fmt.Errorf("模型执行未返回结果")

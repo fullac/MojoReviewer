@@ -87,6 +87,14 @@ func executeBatches(ctx context.Context, input ReviewInput, batches []review.Bat
 			if firstErr == nil {
 				firstErr = err
 			}
+			// 永久配置/权限错误对后续批次同样无效，避免重复请求同一上游。
+			if permanentUpstreamFailure(err) {
+				firstErr = err
+				for _, left := range batches[i+1:] {
+					result.Unreviewed = append(result.Unreviewed, left.Files...)
+				}
+				break
+			}
 		} else {
 			done++
 			result.CoveredFiles = append(result.CoveredFiles, b.Files...)
