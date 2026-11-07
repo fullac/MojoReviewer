@@ -47,8 +47,8 @@ func collapse(text string) string {
 	if looksLikeReviewPrompt(text) {
 		return "（已过滤：历史审查 prompt，不注入）"
 	}
-	if len(text) > maxMemoryChars {
-		text = text[:maxMemoryChars] + "…"
+	if len([]rune(text)) > maxMemoryChars {
+		text = clipQuery(text, maxMemoryChars) + "…"
 	}
 	return strings.ReplaceAll(text, "\n", " / ")
 }

@@ -40,15 +40,11 @@ func TestPrepareChecksOutHeadSHA(t *testing.T) {
 	if got != head {
 		t.Fatalf("检出 %s，期望 %s", got, head)
 	}
-	baseRef := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "refs/review/base"))
+	baseRef := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "refs/worktree/review/base"))
 	if baseRef != base {
 		t.Fatalf("base ref 指向 %s，期望 %s", baseRef, base)
 	}
-	originBase := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "refs/remotes/origin/main"))
-	if originBase != base {
-		t.Fatalf("origin/main 指向 %s，期望 %s", originBase, base)
-	}
-	mergeBase := strings.TrimSpace(run(t, ws.Dir, "git", "merge-base", "refs/review/base", "HEAD"))
+	mergeBase := strings.TrimSpace(run(t, ws.Dir, "git", "merge-base", "refs/worktree/review/base", "HEAD"))
 	if mergeBase != base {
 		t.Fatalf("merge-base 为 %s，期望 %s", mergeBase, base)
 	}

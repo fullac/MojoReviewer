@@ -24,6 +24,7 @@ type Review struct {
 	Author      string
 	HTMLURL     string
 	Comment     string
+	CommentID   int64 // triggering issue comment; zero for local GUI requests
 	Instruction string
 	Intent      Intent
 	SessionKey  string
@@ -92,6 +93,7 @@ func parseComment(body []byte, triggerUser string, allowed map[string]bool) (*Re
 			} `json:"pull_request"`
 		} `json:"issue"`
 		Comment struct {
+			ID   int64  `json:"id"`
 			Body string `json:"body"`
 			User struct {
 				Login string `json:"login"`
@@ -116,6 +118,7 @@ func parseComment(body []byte, triggerUser string, allowed map[string]bool) (*Re
 		return review, err
 	}
 	review.Comment = payload.Comment.Body
+	review.CommentID = payload.Comment.ID
 	intent, instruction := ParseIntent(payload.Comment.Body, triggerUser)
 	review.Intent = intent
 	review.Instruction = instruction
@@ -190,11 +193,12 @@ func mentionWord(c byte) bool {
 }
 
 func isBotComment(body string) bool {
-	return strings.HasPrefix(strings.TrimSpace(body), BotPrefix)
+	body = strings.TrimSpace(body)
+	return strings.HasPrefix(body, BotPrefix) || strings.HasPrefix(body, "【MojoReviewer】")
 }
 
 // BotPrefix 是本服务发出的评论前缀，用来避免自己的评论再次触发。
-const BotPrefix = "【MojoReviewer】"
+const BotPrefix = "【MOJORviewer🥕】"
 
 // ValidSignature 校验 GitHub HMAC-SHA256 签名。secret 为空时拒绝。
 func ValidSignature(secret string, body []byte, header string) bool {

@@ -17,7 +17,7 @@ func TestParseIntent(t *testing.T) {
 		{"@mojo review focus on auth", "mojo", IntentReview, "", "focus on auth"},
 		{"@mojo fix 把超时改成可配置", "mojo", IntentFix, "", "把超时改成可配置"},
 		{"@Mojo 修复：空指针", "mojo", IntentFix, "", "空指针"},
-		{"@mojo remember 这个仓库比较基线用 refs/review/base", "mojo", IntentRemember, "", "这个仓库比较基线用 refs/review/base"},
+		{"@mojo remember 这个仓库比较基线用 refs/worktree/review/base", "mojo", IntentRemember, "", "这个仓库比较基线用 refs/worktree/review/base"},
 		{"@mojo 记住：禁止 push main", "mojo", IntentRemember, "", "禁止 push main"},
 		{"请 @mojo 看看登录逻辑", "mojo", IntentReview, "登录逻辑", ""},
 		{"@mojo patch timeout", "mojo", IntentFix, "", "timeout"},

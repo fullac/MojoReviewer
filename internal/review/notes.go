@@ -8,10 +8,13 @@ import (
 
 // Note 是模型记下来的一条审查意见。服务端最后拼成评论，不让模型自由发挥整段正文。
 type Note struct {
-	Severity string
-	Path     string
-	Line     int
-	Body     string
+	FindingID string `json:"finding_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Severity  string
+	Title     string
+	Path      string
+	Line      int
+	Body      string
 }
 
 // Notes 是一次审查里累积的意见。并发调用时加锁。
@@ -22,6 +25,29 @@ type Notes struct {
 
 // Add 记录一条意见。severity 只接受「严重」和「建议」。
 func (n *Notes) Add(severity, path string, line int, body string) error {
+	return n.AddWithTitle(severity, path, line, "", body)
+}
+
+// AddWithTitle 记录带简短标题的意见；旧调用可以省略标题。
+func (n *Notes) AddWithTitle(severity, path string, line int, title, body string) error {
+	return n.AddFinding(Note{Severity: severity, Path: path, Line: line, Title: title, Body: body})
+}
+
+func (n *Notes) AddFinding(note Note) error {
+	severity, path, line, title, body := note.Severity, note.Path, note.Line, note.Title, note.Body
+	switch note.Status {
+	case "", "new", "persistent", "resolved":
+	default:
+		return fmt.Errorf("status 只能是 new、persistent 或 resolved")
+	}
+	if note.Status == "resolved" && note.FindingID == "" {
+		return fmt.Errorf("已解决意见必须提供历史 finding_id")
+	}
+
+	title = strings.TrimSpace(title)
+	if strings.ContainsAny(title, "\r\n") {
+		return fmt.Errorf("title 必须是单行短句")
+	}
 	severity = strings.TrimSpace(severity)
 	switch severity {
 	case "严重", "建议":
@@ -32,13 +58,18 @@ func (n *Notes) Add(severity, path string, line int, body string) error {
 	if body == "" {
 		return fmt.Errorf("body 为空")
 	}
+	if err := validateNoteBody(body); err != nil {
+		return err
+	}
 	if line < 0 {
 		return fmt.Errorf("line 无效")
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.items = append(n.items, Note{
+		FindingID: note.FindingID, Status: note.Status,
 		Severity: severity,
+		Title:    title,
 		Path:     strings.TrimSpace(path),
 		Line:     line,
 		Body:     body,
@@ -56,7 +87,7 @@ func (n *Notes) Len() int {
 	return len(n.items)
 }
 
-// Render 拼成要发到 PR 的评论。没有意见时两节都写「无」。
+// Render 使用固定分组和编号拼装评论，保留正文中的 Markdown 与代码块。
 func (n *Notes) Render() string {
 	var items []Note
 	if n != nil {
@@ -64,38 +95,74 @@ func (n *Notes) Render() string {
 		items = append(items, n.items...)
 		n.mu.Unlock()
 	}
-	var severe, suggest []string
+	if len(items) == 0 {
+		return BotPrefix + "\n\n本轮未记录审查意见；这不代表所有改动均已核实。"
+	}
+	var severe, suggest []Note
 	for _, item := range items {
-		line := formatNote(item)
 		if item.Severity == "严重" {
-			severe = append(severe, line)
-			continue
+			severe = append(severe, item)
+		} else {
+			suggest = append(suggest, item)
 		}
-		suggest = append(suggest, line)
+	}
+	var counts []string
+	if len(severe) > 0 {
+		counts = append(counts, fmt.Sprintf("%d 个严重问题", len(severe)))
+	}
+	if len(suggest) > 0 {
+		counts = append(counts, fmt.Sprintf("%d 条建议", len(suggest)))
 	}
 	var b strings.Builder
 	b.WriteString(BotPrefix)
-	b.WriteString("\n\n严重\n")
-	b.WriteString(section(severe))
-	b.WriteString("\n\n建议\n")
-	b.WriteString(section(suggest))
+	fmt.Fprintf(&b, "\n\n本轮记录 **%s**。", strings.Join(counts, "、"))
+	number := 0
+	for _, group := range []struct {
+		title string
+		items []Note
+	}{{"🔴 严重问题", severe}, {"🟡 建议", suggest}} {
+		if len(group.items) == 0 {
+			continue
+		}
+		fmt.Fprintf(&b, "\n\n### %s", group.title)
+		for _, item := range group.items {
+			number++
+			fmt.Fprintf(&b, "\n\n%s", formatNote(item, number))
+		}
+	}
 	return b.String()
 }
 
-func formatNote(item Note) string {
-	where := strings.TrimSpace(item.Path)
-	if where != "" && item.Line > 0 {
-		where = fmt.Sprintf("%s:%d", where, item.Line)
+func formatNote(item Note, number int) string {
+	title := item.Title
+	if title == "" {
+		title = "审查意见"
 	}
-	if where == "" {
-		return "- " + item.Body
-	}
-	return fmt.Sprintf("- %s %s", where, item.Body)
+	var b strings.Builder
+	fmt.Fprintf(&b, "**%d. %s**", number, escapeNoteTitle(title))
+	b.WriteString("\n\n" + item.Body)
+	return b.String()
 }
 
-func section(items []string) string {
-	if len(items) == 0 {
-		return "无"
+// escapeNoteTitle 将标题作为纯文本嵌入加粗结构；正文仍保留 Markdown。
+func escapeNoteTitle(title string) string {
+	var b strings.Builder
+	for _, r := range title {
+		// Markdown 支持反斜杠转义 ASCII 标点，包括反斜杠本身。
+		if r >= '!' && r <= '/' || r >= ':' && r <= '@' || r >= '[' && r <= '`' || r >= '{' && r <= '~' {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
 	}
-	return strings.Join(items, "\n")
+	return b.String()
+}
+
+// Snapshot 返回结构化笔记副本，供宿主评测和后续校验使用。
+func (n *Notes) Snapshot() []Note {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]Note{}, n.items...)
 }

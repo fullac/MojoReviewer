@@ -253,7 +253,12 @@ td {
 }
 td button {
   font-size:12px;
-  padding:5px 9px
+  padding:5px 9px;
+  margin-right:6px
+}
+td small {
+  color:var(--muted);
+  font-size:11px
 }
 td a {
   color:#486141;
@@ -371,6 +376,60 @@ pre {
   white-space:pre-wrap;
   overflow-wrap:anywhere
 }
+dialog {
+  width:min(720px, calc(100vw - 32px));
+  max-height:min(80vh, 760px);
+  border:1px solid var(--line);
+  border-radius:8px;
+  background:#fff;
+  color:var(--ink);
+  padding:0;
+  box-shadow:0 18px 50px rgba(41,41,38,.16)
+}
+dialog::backdrop {
+  background:rgba(41,41,38,.35)
+}
+.progress-head,.progress-foot {
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:16px;
+  padding:18px 22px
+}
+.progress-head {
+  border-bottom:1px solid var(--line)
+}
+.progress-head h2 {
+  margin:0;
+  font-size:20px
+}
+.progress-foot {
+  border-top:1px solid var(--line)
+}
+.progress-foot a {
+  color:#486141
+}
+#progress-events {
+  list-style:none;
+  margin:0;
+  padding:8px 22px;
+  overflow:auto;
+  max-height:calc(min(80vh, 760px) - 150px)
+}
+#progress-events li {
+  display:grid;
+  grid-template-columns:92px 64px 1fr;
+  gap:12px;
+  padding:10px 0;
+  border-bottom:1px solid var(--line);
+  font-size:13px
+}
+#progress-events time,#progress-events .kind {
+  color:var(--muted)
+}
+#progress-error {
+  padding:0 22px
+}
 footer {
   margin-top:48px;
   border-top:1px solid var(--line);
@@ -461,3 +520,7 @@ header {
 }
 
 }
+
+.review-metrics { min-width: 240px; font-size: 12px; line-height: 1.8; }
+.review-metrics summary { cursor: pointer; }
+.review-metrics ol { max-height: 240px; overflow: auto; padding-left: 24px; white-space: nowrap; }

@@ -1,10 +1,20 @@
 'use strict';
 let state = {
-}, loadedConfig = false, busy = false;
+}, loadedConfig = false, busy = false, progressID = '', progressTimer = 0, progressButton = null;
+const stageLabels = {
+  queued:'排队',checkout:'检出',model:'模型',publish:'发布',published:'已发布',storage:'存储',metadata:'补齐信息',shutdown:'关闭',duplicate:'重复'
+};
+const eventLabels = {
+  start:'开始',checkout:'检出',model:'模型',tool:'工具',receipt:'回执',note:'笔记',publish:'发布',fail:'失败'
+};
 const $ = selector => document.querySelector(selector);
+const expandedMetrics = new Set();
 const labels = {
   stopped:'服务已停止',starting:'正在启动',running:'服务运行中',recovering:'正在恢复入口',error:'等待恢复',queued:'排队中',running_review:'审查中',completed:'已发布',failed:'失败',interrupted:'已中断',skipped:'已跳过'
 };
+function reviewerReady() {
+  return !!state.reviewer_ready;
+}
 function message(text, bad=false) {
   const el=$('#message');
   el.textContent=text;
@@ -28,6 +38,48 @@ function cell(row, text) {
   row.append(td);
   return td;
 }
+// 观测值只通过 textContent 展示；不把工具参数、结果或错误正文送到页面。
+function renderMetrics(td, item) {
+  const m=item.metrics;
+  if(!m){td.textContent='未记录';return;}
+  const details=document.createElement('details');
+  details.className='review-metrics';
+  details.open=expandedMetrics.has(item.id);
+  details.addEventListener('toggle',()=>details.open?expandedMetrics.add(item.id):expandedMetrics.delete(item.id));
+  const summary=document.createElement('summary');
+  summary.textContent=(m.total_ms/1000).toFixed(2)+' 秒 · '+m.iterations+' 轮 · '+(m.usage?m.usage.total_tokens+' token':'用量未记录');
+  details.append(summary);
+  const stages={checkout:'检出',memory:'项目记忆',manifest:'改动清单',model:'模型',ground:'依据校验',publish:'发布'};
+  for(const [key,label] of Object.entries(stages)){
+    const line=document.createElement('div');
+    line.textContent=label+'：'+(Object.hasOwn(m.stages_ms||{},key)?(m.stages_ms[key]/1000).toFixed(3)+' 秒':'未执行');
+    details.append(line);
+  }
+  if(typeof m.memory_cache_hit==='boolean'){
+    const line=document.createElement('div');
+    line.textContent='记忆索引：'+(m.memory_cache_hit?'命中提交缓存':'完成索引检查')+' · '+m.memory_files+' 个文档';
+    details.append(line);
+  }
+  if(Object.hasOwn(m.stages_ms||{},'ground')){
+    const line=document.createElement('div');line.textContent='依据校验未通过 '+(m.ground_rejected||0)+' 条';details.append(line);
+  }
+  if(m.batches_total){const line=document.createElement('div');line.textContent='批次完成 '+m.batches_completed+'/'+m.batches_total;details.append(line);}
+  if(m.usage){
+    const line=document.createElement('div');
+    line.textContent='输入 '+m.usage.input_tokens+' / 输出 '+m.usage.output_tokens+' / 缓存命中 '+m.usage.cached_input_tokens;
+    details.append(line);
+  }
+  const title=document.createElement('div');
+  title.textContent='工具调用 '+m.tool_count+' 次（最多显示 400 条；按运行时记录顺序）';
+  details.append(title);
+  const list=document.createElement('ol');
+  for(const tool of m.tools||[]){
+    const line=document.createElement('li');
+    line.textContent=tool.name+' · '+tool.duration_ms+' ms · 返回 '+tool.result_bytes+' 字节';
+    list.append(line);
+  }
+  details.append(list);td.append(details);
+}
 async function refresh() {
   try {
     state=await request('/api/status');
@@ -35,7 +87,7 @@ async function refresh() {
     $('#connection').className='badge good';
     $('#phase').textContent=labels[state.phase]||state.phase;
     $('#error').textContent=state.error||' ';
-    $('#reviewer').textContent=state.pids.reviewer?'PID '+state.pids.reviewer:'已停止';
+    $('#reviewer').textContent=state.pids.reviewer==='external'?'外部进程':state.pids.reviewer?'PID '+state.pids.reviewer:'已停止';
     $('#tunnel').textContent=state.pids.tunnel?'PID '+state.pids.tunnel:'已停止';
     $('#probe').textContent=state.phase==='running'?'连续失败 '+state.health_failures+'/3':'启动后每 30 秒签名探测';
     $('#queue').textContent=state.activity.filter(a=>a.state==='queued').length+' 等待';
@@ -57,6 +109,12 @@ async function refresh() {
       badge.textContent=item.state==='running'?'审查中':labels[item.state]||item.state;
       status.append(badge);
       if(item.state==='failed')badge.title='失败阶段：'+item.stage;
+      renderMetrics(cell(row,''), item);
+      if(item.stage){
+        const stage=document.createElement('small');
+        stage.textContent=stageLabels[item.stage]||item.stage;
+        status.append(document.createElement('br'), stage);
+      }
       cell(row,new Date(item.updated_at).toLocaleString('zh-CN',{
         hour12:false
       }));
@@ -75,9 +133,14 @@ async function refresh() {
         }catch{
         }
       }
+      const view=document.createElement('button');
+      view.type='button';
+      view.textContent='查看进度';
+      view.addEventListener('click',()=>openProgress(item, view));
+      actions.append(view);
       const retry=document.createElement('button');
       retry.textContent='重新审查';
-      retry.disabled=state.phase!=='running'||busy;
+      retry.disabled=!reviewerReady()||busy;
       retry.addEventListener('click',()=>action('retry',{
         repo:item.repo,number:item.number
       }));
@@ -89,12 +152,88 @@ async function refresh() {
     });
     $('#config-note').textContent=state.desired?'先在「服务与审查」中停止服务，再修改配置':'';
     $('#config-form button').disabled=state.desired||busy;
-    $('#retry-form button').disabled=state.phase!=='running'||busy;
+    $('#retry-form button').disabled=!reviewerReady()||busy;
   }catch(error){
     $('#connection').textContent='管理器断开';
     $('#connection').className='badge bad';
     message(error.message,true);
   }
+}
+function safeComment(url){
+  try{
+    const parsed=new URL(url);
+    if(parsed.protocol==='https:'&&!parsed.username&&!parsed.password)return parsed.href;
+  }catch{
+  }
+  return '';
+}
+function openProgress(item, button){
+  progressID=item.id||'';
+  progressButton=button||null;
+  const dialog=$('#progress');
+  $('#progress-title').textContent=(item.repo||'')+' #'+(item.number||'');
+  $('#progress-meta').textContent=(item.id||'无尝试 ID')+' · '+((item.head_sha||'待解析').slice(0,10));
+  const badge=$('#progress-state');
+  badge.className='badge '+(item.state==='completed'?'good':item.state==='failed'?'bad':'');
+  badge.textContent=item.state==='running'?'审查中':labels[item.state]||item.state||'';
+  const link=$('#progress-comment');
+  const href=safeComment(item.comment_url);
+  link.hidden=!href;
+  if(href)link.href=href;
+  $('#progress-error').hidden=true;
+  $('#progress-events').replaceChildren();
+  if(!dialog.open)dialog.showModal();
+  $('#progress-close').focus();
+  loadProgress();
+  clearInterval(progressTimer);
+  const live=item.state==='queued'||item.state==='running';
+  if(live)progressTimer=setInterval(loadProgress,3000);
+}
+async function loadProgress(){
+  if(!progressID){
+    $('#progress-error').hidden=false;
+    $('#progress-error').textContent='这次尝试没有消息记录。';
+    return;
+  }
+  const list=$('#progress-events');
+  const nearBottom=list.scrollHeight-list.scrollTop-list.clientHeight<40;
+  try{
+    const data=await request('/api/activity/'+encodeURIComponent(progressID)+'/progress');
+    const events=data.events||[];
+    if(!events.length){
+      list.replaceChildren();
+      $('#progress-error').hidden=false;
+      $('#progress-error').textContent='这次尝试没有消息记录。';
+      return;
+    }
+    $('#progress-error').hidden=true;
+    list.replaceChildren();
+    for(const event of events){
+      const row=document.createElement('li');
+      const time=document.createElement('time');
+      time.textContent=event.at?new Date(event.at).toLocaleTimeString('zh-CN',{hour12:false}):'';
+      const kind=document.createElement('span');
+      kind.className='kind';
+      kind.textContent=eventLabels[event.kind]||event.kind||'';
+      const summary=document.createElement('span');
+      summary.textContent=event.summary||'';
+      row.append(time, kind, summary);
+      list.append(row);
+    }
+    if(nearBottom)list.scrollTop=list.scrollHeight;
+  }catch(error){
+    $('#progress-error').hidden=false;
+    $('#progress-error').textContent=error.message;
+  }
+}
+function closeProgress(){
+  clearInterval(progressTimer);
+  progressTimer=0;
+  progressID='';
+  const button=progressButton;
+  progressButton=null;
+  $('#progress').close();
+  if(button)button.focus();
 }
 async function action(name,body={
 }){
@@ -141,10 +280,18 @@ async function config(){
   }
 }
 document.querySelectorAll('[data-tab]').forEach(button=>button.addEventListener('click',()=>{
-  document.querySelectorAll('.view').forEach(view=>view.hidden=view.id!==button.dataset.tab);document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.toggle('selected',tab===button));$('#heading').textContent=button.textContent;config();
+  document.querySelectorAll('.view').forEach(view=>view.hidden=view.id!==button.dataset.tab);document.querySelectorAll('[data-tab]').forEach(tab=>tab.classList.toggle('selected',tab===button));$('#heading').textContent=button.textContent;if($('#progress').open)closeProgress();config();
 }));
 document.querySelectorAll('[data-action]').forEach(button=>button.addEventListener('click',()=>action(button.dataset.action)));
 $('#refresh').addEventListener('click',refresh);
+$('#progress-close').addEventListener('click',closeProgress);
+$('#progress').addEventListener('click',event=>{
+  if(event.target===$('#progress'))closeProgress();
+});
+$('#progress').addEventListener('cancel',event=>{
+  event.preventDefault();
+  closeProgress();
+});
 $('#retry-form').addEventListener('submit',event=>{
   event.preventDefault();action('retry',{
     repo:$('#retry-repo').value,number:Number($('#retry-number').value)

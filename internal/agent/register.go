@@ -15,14 +15,15 @@ type reviewTools struct {
 	scope review.ToolScope
 	notes *review.Notes
 	reads *readProgress
+	trace *progressTrace
 }
 
-func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress) error {
-	tools := reviewTools{scope: scope, notes: notes, reads: reads}
+func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review.Notes, reads *readProgress, trace *progressTrace) error {
+	tools := reviewTools{scope: scope, notes: notes, reads: reads, trace: trace}
 	specs := []sdk.ToolSpec{
 		{
 			Name:        "pr_diff_stat",
-			Description: "分页返回 PR 相对 refs/review/merge-base 的文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
+			Description: "分页返回 PR 相对 refs/worktree/review/merge-base 的文件列表和增删行数。has_more=true 时用 next_offset 续取；patch_truncated 仅表示整份 patch 超限，不表示文件列表截断。",
 			Parameters: map[string]sdk.ToolParam{
 				"offset": {Type: "number", Description: "从第几个文件开始，0-based，默认 0"},
 				"limit":  {Type: "number", Description: "每页文件数，默认 50，最多 200"},
@@ -33,7 +34,7 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 		},
 		{
 			Name:        "pr_file_diff",
-			Description: "只返回一个文件相对 refs/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
+			Description: "只返回一个文件相对 refs/worktree/review/merge-base 的 patch。用它代替把整份 diff 塞进上下文。",
 			Parameters: map[string]sdk.ToolParam{
 				"path": {Type: "string", Description: "检出内的相对路径", Required: true},
 			},
@@ -75,10 +76,13 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 			Name:        "review_note",
 			Description: "记录一条审查意见。severity 只能是「严重」或「建议」。服务端会把笔记拼成最终 PR 评论，不要在最终回复里另写一份完整评论。",
 			Parameters: map[string]sdk.ToolParam{
-				"severity": {Type: "string", Description: "严重 或 建议", Required: true},
-				"path":     {Type: "string", Description: "相关文件的相对路径，可空", Required: false},
-				"line":     {Type: "number", Description: "相关行号，可空", Required: false},
-				"body":     {Type: "string", Description: "这一条意见的正文", Required: true},
+				"finding_id": {Type: "string", Description: "复核历史发现时填 previous_review 中的 id；新增意见留空"},
+				"status":     {Type: "string", Description: "new 新增；persistent 仍存在；resolved 已解决（须已读取当前依据）"},
+				"severity":   {Type: "string", Description: "严重 或 建议", Required: true},
+				"title":      {Type: "string", Description: "单行短标题，直接说明问题或建议，不加编号、emoji 或 Markdown 标记", Required: false},
+				"path":       {Type: "string", Description: "相关文件的相对路径，可空；与正文代码位置项一致", Required: false},
+				"line":       {Type: "number", Description: "相关行号，可空；与正文代码位置项一致", Required: false},
+				"body":       {Type: "string", Description: review.NoteBodyRules, Required: true},
 			},
 			Handler:     tools.note,
 			AutoApprove: true,
@@ -104,6 +108,20 @@ func registerReviewTools(agent *sdk.Agent, scope review.ToolScope, notes *review
 	return nil
 }
 
+func (t reviewTools) call(name string, args map[string]any, fn func() (string, error)) (string, error) {
+	out, err := fn()
+	if t.trace != nil {
+		kind := "tool"
+		if name == "review_note" && err == nil {
+			kind = "note"
+		} else if err == nil && strings.HasPrefix(out, "本轮已读") {
+			kind = "receipt"
+		}
+		t.trace.add(kind, toolSummary(name, args, out, err))
+	}
+	return out, err
+}
+
 func (t reviewTools) diffStat(args map[string]any) (string, error) {
 	offset, limit := argInt(args, "offset"), argInt(args, "limit")
 	if limit == 0 {
@@ -112,15 +130,19 @@ func (t reviewTools) diffStat(args map[string]any) (string, error) {
 	if limit > 200 {
 		limit = 200
 	}
-	return t.reads.read(readKey{kind: "pr_diff_stat", start: offset, end: limit}, func() (string, error) {
-		return t.scope.StatPage(offset, limit)
+	return t.call("pr_diff_stat", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "pr_diff_stat", start: offset, end: limit}, func() (string, error) {
+			return t.scope.StatPage(offset, limit)
+		})
 	})
 }
 
 func (t reviewTools) fileDiff(args map[string]any) (string, error) {
 	path := argString(args, "path")
-	return t.reads.read(readKey{kind: "pr_file_diff", path: readPath(t.scope.Dir, path)}, func() (string, error) {
-		return t.scope.FileDiff(path)
+	return t.call("pr_file_diff", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "pr_file_diff", path: readPath(t.scope.Dir, path)}, func() (string, error) {
+			return t.scope.FileDiff(path)
+		})
 	})
 }
 
@@ -133,28 +155,38 @@ func (t reviewTools) readFile(args map[string]any) (string, error) {
 	if end <= 0 || end-start >= 400 {
 		end = start + 399
 	}
-	return t.reads.read(readKey{kind: "read_repo_file", path: readPath(t.scope.Dir, path), start: start, end: end}, func() (string, error) {
-		return t.scope.ReadFile(path, start, end)
+	return t.call("read_repo_file", args, func() (string, error) {
+		return t.reads.read(readKey{kind: "read_repo_file", path: readPath(t.scope.Dir, path), start: start, end: end}, func() (string, error) {
+			return t.scope.ReadFile(path, start, end)
+		})
 	})
 }
 
 func (t reviewTools) grep(args map[string]any) (string, error) {
-	return t.scope.Grep(argString(args, "pattern"), argString(args, "glob"))
+	return t.call("repo_grep", args, func() (string, error) {
+		return t.scope.Grep(argString(args, "pattern"), argString(args, "glob"))
+	})
 }
 
-func (t reviewTools) symbols(_ map[string]any) (string, error) {
-	return t.scope.ChangedSymbols()
+func (t reviewTools) symbols(args map[string]any) (string, error) {
+	return t.call("changed_symbols", args, func() (string, error) {
+		return t.scope.ChangedSymbols()
+	})
 }
 
 func (t reviewTools) note(args map[string]any) (string, error) {
-	if err := t.notes.Add(argString(args, "severity"), argString(args, "path"), argInt(args, "line"), argString(args, "body")); err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil
+	return t.call("review_note", args, func() (string, error) {
+		if err := t.notes.AddFinding(review.Note{Severity: argString(args, "severity"), Path: argString(args, "path"), Line: argInt(args, "line"), Title: argString(args, "title"), Body: argString(args, "body"), FindingID: argString(args, "finding_id"), Status: argString(args, "status")}); err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("已记录，当前 %d 条", t.notes.Len()), nil
+	})
 }
 
 func (t reviewTools) tests(args map[string]any) (string, error) {
-	return t.scope.TestsAround(argString(args, "path"))
+	return t.call("tests_around", args, func() (string, error) {
+		return t.scope.TestsAround(argString(args, "path"))
+	})
 }
 
 func argString(args map[string]any, key string) string {

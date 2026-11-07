@@ -6,16 +6,18 @@ GitHub webhook 进来，只读审查一个 PR，用 `gh` 把结论文字发回�
 
 - 默认只审查。不 `gh pr create`，不 `gh pr merge`。
 - `fix` 且 `agent.fix_enabled` 时：模型可改检出内文件；**宿主**在 `fix_push_enabled` 下 commit/push 到 PR head（非 force，有作者/路径/体量门禁）。仍禁止模型自己调用 terminal/git。
-- 模型工具必须落在这次检出里。`refs/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/review/merge-base`，不是本地 `main`。
+- 模型工具必须落在这次检出里。`refs/worktree/review/base` 保存 PR base SHA，实际比较基线为固定的共同祖先 `refs/worktree/review/merge-base`，不是本地 `main`。
 - 检出是 detached、可能 shallow。禁止 `git diff main...HEAD` 和任何假定本地有 base 分支的三点 diff。
-- 一个进程只用 `agent.provider` 和 `agent.model` 这一组。不要按任务换模型。
+- 一个进程只用 `agent.provider` 和 `agent.model` 这一组，chat/compact 温度固定为 `0.5`。不要按任务换模型。
+- 本项目始终不修改 LH 源码或引入私有补丁。Mojo 的隔离 SDK 配置关闭 `agent.foreground.enabled`，普通工具循环最多 30 次迭代；任务总超时、审查状态和发布由宿主管理，会话仍可复用，新任务不生成 foreground 检查点。
 - 审查串行，队列 32。满了 webhook 回 429。不要改成无界队列。
 - 同一个 PR 的同一个 head SHA 只自动审一次，已开始的自动尝试持久化到 `auto_heads`，失败也保留。带完整 @触发用户 的评论或 GUI 显式重审可以再审，并续用已有会话。仅排队未执行的自动任务可在重启后补齐；中断的 GitHub 评论在投递保留期内请求补送，本地 GUI 重审需再次点击。
 - 评论意图：`review`（默认）、`remember`（写入项目记忆）、`fix`（需 `agent.fix_enabled=true`；改工作区后由宿主 commit/push 到 head 分支）。
-- 自己发出的评论以 `【MojoReviewer】` 开头。解析 webhook 时要跳过，避免自己触发自己。
+- 任务写入 running 回执、完成自动 head 去重后，由宿主通过 `gh api` 添加 👀 reaction；自动任务指向 PR，评论任务指向 webhook 的 `comment.id`。GUI 合成评论没有 ID，跳过表情。调用最多 5 秒，失败不阻断任务；不交给模型，不新增 LH 工具。
+- 自己发出的评论以 `【MOJORviewer🥕】` 开头。解析 webhook 时跳过新前缀及旧前缀 `【MojoReviewer】`，避免自己触发自己。
 - `github.host` 为空时，`gh api` 不传 `--hostname`，发评论也不覆盖 `GH_HOST`。有值时，查 PR 和发评论必须用同一个主机。不要再把主机写死成 `github.com`。
-- 失败评论只写阶段和归类原因。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
-- 只读审查正文始终用 `review_note` 和宿主固定文案拼装；零笔记也不回退到模型自由文本，不代表全部改动均已核实。
+- 失败评论只写阶段和归类原因。模型上游错误可附 HTTP 状态、白名单错误类别和已检查凭据的配置模型名，不回显上游正文；400/401/403/404 停止剩余审查批次，处理后需显式重审。`gh`/`git` 的 stderr、本地路径和令牌只进日志。
+- 只读审查正文始终用 `review_note` 和宿主固定文案拼装；宿主生成数量摘要、🔴 严重问题 / 🟡 建议分组与加粗编号标题，空分组省略。严重问题和建议的正文均必须恰好三项且按顺序：「问题描述、代码位置、修复建议」。代码位置使用行内代码标注已读取的相对文件路径和行号，与 path/line 一致，不再额外展示位置段落。各项非空，使用 `- **标签：** 内容`，项间空行；禁止额外栏目（包括补充说明、验证、代码依据）、标题、嵌套列表、HTML 和列表外文字。必要带语言代码块只放最后一项，围栏、内容及续行缩进两个空格。系统提示与工具说明共用 `review.NoteBodyRules`，`Notes.AddWithTitle` 校验通过后才记录；拒绝时让模型修正。适当加粗、斜体，短标识符用行内代码。零笔记不回退到自由文本，不代表全部改动均已核实。
 
 ## 配置与安全
 
@@ -50,6 +52,7 @@ internal/review/comment_safety.go 评论凭据检查，命中拒绝发布
 internal/agent/runner.go     sdk.New、会话、提示词
 internal/agent/register.go   每次审查重新绑定那 7 个工具
 internal/store/store.go      data_dir/reviews.json，记 session 与自动尝试 SHA 历史
+internal/store/progress.go   data_dir/progress/<attempt>.json，单次审查的脱敏进度
 internal/projectmem/         项目记忆：选文档、增量索引、审查前提示注入
 internal/config/config.go    .MojoReviewer/config.json
 config.example.json          可提交的配置样例（无真实密钥）
@@ -62,17 +65,17 @@ config.example.json          可提交的配置样例（无真实密钥）
 1. `github.ValidSignature`。secret 为空直接拒绝。body 最多读 2 MiB。
 2. `pull_request` 只收 `opened`、`reopened`、`synchronize`、`ready_for_review`，草稿丢弃。`issue_comment` 只收 PR 上新建的、完整提到 `github.trigger_user` 的评论；更长账号和邮箱片段不匹配。
 3. `github.repos` 非空时，仓库不在名单里就忽略。
-4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/review/base`，计算唯一共同祖先并固定到 `refs/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
-5. 提示词**不**预置整份 diff（CodeFarmer 做法）。模型先 `pr_diff_stat`，再 `pr_file_diff` 按文件读。
-6. `projectmem` 对检出做增量索引（README/AGENTS/docs 等），并把 Recall/RAG 片段注入提示词。索引失败只记日志，不阻断审查。
-7. `runner.Review` 绑定工具、跑一轮。新 PR 开新会话，评论触发复用 `reviews.json` 里的 session。
+4. `review.PrepareWithBase` 把 head 检出到 `data_dir/workspaces/<sessionKey>`，把 base SHA 抓到 `refs/worktree/review/base`，计算唯一共同祖先并固定到 `refs/worktree/review/merge-base`。失败时不能复用旧共同祖先。后续 diff 工具不再 fetch。
+5. 提示词**不**预置整份 diff。宿主先生成有界 `change_manifest`（文件、增删行、风险排序、符号和测试）并作为不可信 JSON 注入；文件列表缺失时模型用 `pr_diff_stat` 分页补齐，再用 `pr_file_diff` 按文件读取。清单失败退回原有工具流程，风险分不代表缺陷判断。
+6. 宿主在模型超时窗口之外调用 `runner.PrepareMemory`：独立 30 秒预算，`projectmem` 按仓库和 head 缓存成功索引，以改动路径/符号增强召回，片段通过 `ReviewInput.Memory` 注入。索引失败只记分类日志，不阻断审查。
+7. `runner.Review` 绑定工具、跑一轮。新 head 开新会话，同 head 显式跟进可复用 `reviews.json` 里的 session。大 PR 初次审查分批串行，每批独立会话，共享总预算。
 8. `review.PostComment` 发回 PR。
 
 ## fix 路径
 
 1. 评论解析为 `IntentFix`，且 `agent.fix_enabled`。
 2. `fix_allowed_authors` 非空时校验 `item.Author`。
-3. 与审查相同方式 `PrepareWithBase` + 项目记忆。
+3. 与审查相同方式 `PrepareWithBase` + 改动清单 + 宿主 `PrepareMemory`；记忆准备不占模型超时窗口。
 4. `runner.Fix`：fix 工具白名单 + 会话 cwd 钉在检出。
 5. `review.PublishFix`：敏感路径 / 体量门禁 → 可选 commit/push 到 head。
 6. 评论回报 fix 结果与 publish 摘要；成功 push 时更新 `reviews.json` 的 head SHA。
@@ -84,16 +87,18 @@ config.example.json          可提交的配置样例（无真实密钥）
 | 工具 | 作用 |
 | --- | --- |
 | `pr_diff_stat` | 文件列表分页（offset/limit）、增删行数、整份 patch 是否超限 |
-| `pr_file_diff` | 单个文件相对 `refs/review/merge-base` 的 patch |
+| `pr_file_diff` | 单个文件相对 `refs/worktree/review/merge-base` 的 patch |
 | `read_repo_file` | 检出内读文件，可带行号 |
 | `repo_grep` | 只在检出内搜索 |
 | `changed_symbols` | 改动的函数、类型、方法。Go 用 `go/parser`，其他语言用声明行正则 |
 | `tests_around` | 改动文件附近已有的测试 |
 | `review_note` | 记一条。`severity` 只能是 `严重` 或 `建议` |
 
+审查提示词必须为七个工具分别保留明确的调用措辞（可按需调用），仅列工具名不够：LH 会按提示词意图筛选发给模型的工具。修改提示词或升级 SDK 后，用本地假模型检查实际请求恰好包含这七个工具，覆盖后续轮次与会话复用，不能只检查注册表或白名单。
+
 `pr_diff_stat` 默认每页 50 个文件，最多 200；`has_more=true` 时按 `next_offset` 续取，直到 `has_more=false`。`patch_truncated` 只表示整份 patch 超限，不能当作文件地图不完整。
 
-只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。依赖的 LuckyAgent 对只读稳定重复要求收束；宿主不把这类结果当成前台阻塞。
+只读审查每轮维护独立的读取回执。同一文件的 patch、同一标准化行段重复调用时只返回已读提示，不再加载原文；新一轮重新建立回执。fix 路径可写文件，因此不复用去重记录。证据充分后记录 `review_note` 并收束，不要循环重读。普通循环的重复保护、空正文或固定空回复提示可能返回空错误，宿主必须转为执行失败，保留笔记并阻止未完成的 fix 发布。
 
 模型中断时保留已记录的笔记和读取范围，发布带「审查未完成」的失败说明；可识别的 foreground 任务只公开任务 ID 与原运行时恢复指令，不公开原始错误/prompt。宿主日志同样只记录归类原因和任务 ID。失败说明发布失败时，日志同时保留评论错误和这条归类原因。失败说明发布后仍记录 `failed/model`，只补充评论 URL，不能标记为审查完成。
 
@@ -122,6 +127,8 @@ config.example.json          可提交的配置样例（无真实密钥）
 
 `reviews.json` 的 `auto_heads` 独立于最近会话的 `head_sha`。写会话不能清除自动尝试历史；旧记录缺此字段时保守迁移已有 head。审查记录和活动回执通过临时文件、Sync、rename 原子写入。排队回执写入失败返回 500，不能接受任务后丢失记录。
 
+`data_dir/progress/<attempt-id>.json` 只记这一次尝试的阶段事件：开始、检出、模型请求次数、工具名、相对路径、行范围、已读回执、笔记的严重级别和短标题、发布或归类失败原因。不写 prompt、diff、文件正文、模型自由回复、令牌或绝对路径。管理台按尝试读取，不从 LuckyAgent 会话取记录。
+
 `log_level` 支持 `debug`、`info`、`warn`、`error`，作用于 Mojo 宿主的 `slog` 日志；不修改 SDK 内部日志配置。
 
 监听默认 `127.0.0.1:9968`。本机入口是 `go run ./cmd/mojoreviewer`。
@@ -144,3 +151,11 @@ GOWORK=off go build -mod=readonly -o /tmp/mojoreviewer ./cmd/mojoreviewer
 - 不要在提示词里再塞整份 diff 来绕过工具。首轮 prompt 只给元数据 + 步骤；diff 一律工具按需读（issue #21）。\n- durable/foreground 会把 goal pin 住并在 history 再留一份，有效预算远小于 `max_context_tokens`；靠调大 token 上限不能代替控制 prompt 体积。
 - 不要假定被审仓库里存在名为 `main` 的本地分支。
 - 不要把 `.codex-checkpoint.md`、`bin/`、`*.db`、`.env` 加进提交。
+
+## Harness 宿主补充契约
+
+- 自动队列按 PR 合并尚未执行的载荷；执行前核实远端 head，过时回执记 skipped。显式评论独立排队，仍只有一个 worker 和 32 个位置。
+- 发布前对正常及中断笔记执行确定性依据校验，记录 ground 耗时和拒绝数量；位置可定位不代表缺陷语义已证明。
+- 会话 head、自动尝试历史、成功发布的 reviewed_sha 分开保存。新 head 只注入有界结构化发现，历史缺席不代表已解决；历史状态变化必须重新读取证据。
+- reviewed_sha 和发现摘要仅在模型正常结束且评论发布成功后推进。失败轮次保留原已审基线。
+- Git 对象共享，PR 工作目录和 refs/worktree/review/* 引用隔离；脏检出拒绝复用并保留现场。旧克隆目录不自动删除。

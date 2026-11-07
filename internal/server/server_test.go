@@ -18,10 +18,37 @@ import (
 	"github.com/mojoreviewer/mojoreviewer/internal/agent"
 	"github.com/mojoreviewer/mojoreviewer/internal/config"
 	"github.com/mojoreviewer/mojoreviewer/internal/github"
+	"github.com/mojoreviewer/mojoreviewer/internal/projectmem"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"github.com/mojoreviewer/mojoreviewer/internal/store"
 )
 
+func TestRenderedReviewCommentCannotTriggerWebhook(t *testing.T) {
+	if review.BotPrefix != github.BotPrefix {
+		t.Fatal("发布评论与 webhook 过滤的前缀必须一致")
+	}
+	var notes review.Notes
+	if err := notes.Add("建议", "", 0, "- **问题描述：** @mojo 检查错误分支。\n\n- **代码位置：** `a.go:1`\n\n- **修复建议：** 返回错误。"); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]any{
+		"action":     "created",
+		"repository": map[string]any{"full_name": "acme/web"},
+		"issue":      map[string]any{"number": 7, "pull_request": map[string]any{"url": "https://example.test/pr/7"}},
+		"comment":    map[string]any{"body": notes.Render(), "user": map[string]any{"login": "bot"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item, err := github.ParseWebhook("issue_comment", payload, "mojo", nil)
+	if err != nil || item != nil {
+		t.Fatalf("带触发账号的宿主评论应被忽略: %+v %v", item, err)
+	}
+}
+
 type recordingRunner struct {
+	memoryInputs []agent.ReviewInput
+	memoryResult projectmem.ContextBundle
 	inputs       []agent.ReviewInput
 	fixInputs    []agent.ReviewInput
 	remembers    []string
@@ -69,6 +96,13 @@ func testServer(t *testing.T, response, failure string) (*Server, *recordingRunn
 		"gh": `#!/bin/sh
 case "$1" in
   api)
+    case "$*" in
+      */reactions*)
+        printf '%s\n' "$@" >> "$MOJO_TEST_REACTION"
+        if [ "$MOJO_TEST_REACTION_FAILURE" = "1" ]; then exit 1; fi
+        exit 0
+        ;;
+    esac
     printf '%s\n' "$@" >> "$MOJO_TEST_API"
     if [ -s "$MOJO_TEST_FAILURE" ]; then cat "$MOJO_TEST_FAILURE" >&2; exit 1; fi
     cat "$MOJO_TEST_RESPONSE"
@@ -89,6 +123,8 @@ esac
 	}
 	apiPath, commentPath := filepath.Join(dir, "api"), filepath.Join(dir, "comment")
 	t.Setenv("MOJO_TEST_API", apiPath)
+	t.Setenv("MOJO_TEST_REACTION", filepath.Join(dir, "reaction"))
+	t.Setenv("MOJO_TEST_REACTION_FAILURE", "")
 	t.Setenv("MOJO_TEST_COMMENT", commentPath)
 	t.Setenv("MOJO_TEST_RESPONSE", filepath.Join(dir, "response"))
 	t.Setenv("MOJO_TEST_FAILURE", filepath.Join(dir, "failure"))
@@ -107,12 +143,13 @@ esac
 	runner := &recordingRunner{}
 	s := New(cfg, nil, st)
 	s.runner = runner
+	s.resolveHead = func(_ context.Context, item github.Review, _ string) (github.Review, error) { return item, nil }
 	return s, runner, apiPath, commentPath
 }
 
 func queueComment(t *testing.T, s *Server) github.Review {
 	t.Helper()
-	body := `{"action":"created","issue":{"number":7,"title":"旧标题","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"body":"@mojo 再看一下","user":{"login":"commenter"}},"repository":{"full_name":"acme/web"}}`
+	body := `{"action":"created","issue":{"number":7,"title":"旧标题","pull_request":{"url":"https://api.github.com/repos/acme/web/pulls/7"}},"comment":{"id":6382461298,"body":"@mojo 再看一下","user":{"login":"commenter"}},"repository":{"full_name":"acme/web"}}`
 	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
 	_, _ = mac.Write([]byte(body))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -143,7 +180,7 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(string(out))
 }
 
-func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
+func TestCommentReviewStartsFreshOnNewHeadAndReusesSameHead(t *testing.T) {
 	origin := t.TempDir()
 	runGit(t, origin, "init", "-b", "main")
 	runGit(t, origin, "config", "user.name", "mojo")
@@ -173,15 +210,26 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	if err := s.store.Put("acme/web#7", store.Record{Repo: "acme/web", Number: 7, HeadSHA: "old-head", SessionID: "existing-session"}); err != nil {
 		t.Fatal(err)
 	}
-	s.runOne(context.Background(), queueComment(t, s))
+	queued := queueComment(t, s)
+	if _, err := os.Stat(os.Getenv("MOJO_TEST_REACTION")); !os.IsNotExist(err) {
+		t.Fatal("queued task reacted before starting")
+	}
+	runner.onReview = func() {
+		raw, err := os.ReadFile(os.Getenv("MOJO_TEST_REACTION"))
+		if err != nil || !strings.Contains(string(raw), "repos/acme/web/issues/comments/6382461298/reactions") {
+			t.Fatalf("missing trigger comment reaction before model: %s %v", raw, err)
+		}
+	}
+	s.runOne(context.Background(), queued)
+	runner.onReview = nil
 	if len(runner.inputs) != 1 {
 		t.Fatalf("评论触发未进入审查: %+v", runner.inputs)
 	}
 	input := runner.inputs[0]
-	if input.SessionID != "existing-session" || input.Review.Comment != "@mojo 再看一下" || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
+	if input.SessionID != "" || input.Review.Comment != "@mojo 再看一下" || input.Review.CommentID != 6382461298 || input.Review.HeadSHA != head || input.Review.BaseSHA != base {
 		t.Fatalf("审查上下文错误: %+v", input)
 	}
-	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/review/base") != base {
+	if runGit(t, input.WorkDir, "rev-parse", "HEAD") != head || runGit(t, input.WorkDir, "rev-parse", "refs/worktree/review/base") != base {
 		t.Fatal("没有检出最新 head 或正确 base")
 	}
 	// issue #21: bulk diff is no longer preloaded into ReviewInput / prompt.
@@ -198,7 +246,7 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 		t.Fatalf("审查记录未更新: %+v", rec)
 	}
 	comment, err := os.ReadFile(commentPath)
-	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MojoReviewer】\n\n审查完成") {
+	if err != nil || !strings.Contains(string(comment), "GH_HOST=ghe.example.com\npr\ncomment\n7\n--repo\nacme/web\n--body\n【MOJORviewer🥕】\n\n审查完成") {
 		t.Fatalf("没有把审查结果发到配置的主机: %s %v", comment, err)
 	}
 	// 自动 PR 事件已有完整元数据，无需额外查询 GitHub。
@@ -211,6 +259,9 @@ func TestCommentReviewChecksOutLatestHeadAndReusesSession(t *testing.T) {
 	s.runOne(context.Background(), item)
 	if len(runner.inputs) != 2 {
 		t.Fatal("完整的 PR 任务未正常审查")
+	}
+	if runner.inputs[1].SessionID != "existing-session" || runner.inputs[1].Previous == nil || runner.inputs[1].Previous.ReviewedSHA != head {
+		t.Fatal("same-head followup lost session or reviewed baseline")
 	}
 	if _, err := os.Stat(apiPath); !os.IsNotExist(err) {
 		t.Fatalf("自动 PR 事件不应补拉元数据: %v", err)
@@ -299,7 +350,7 @@ func TestPublicFailureRedactsOperationalDetail(t *testing.T) {
 
 func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
 	s, runner, _, commentPath := testServer(t, `{"number":7,"title":"t","body":"","user":{"login":"a"},"base":{"ref":"main","sha":"base","repo":{"full_name":"acme/web","clone_url":"file:///tmp"}},"head":{"ref":"f","sha":"head"}}`, "")
-	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo remember 基线用 refs/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
+	body := `{"action":"created","issue":{"number":7,"title":"t","pull_request":{"url":"x"}},"comment":{"body":"@mojo remember 基线用 refs/worktree/review/base","user":{"login":"ada"}},"repository":{"full_name":"acme/web"}}`
 	mac := hmac.New(sha256.New, []byte(s.cfg.GitHub.WebhookSecret))
 	_, _ = mac.Write([]byte(body))
 	req := httptest.NewRequest(http.MethodPost, "/webhook/github", strings.NewReader(body))
@@ -318,7 +369,7 @@ func TestRememberIntentWritesMemoryWithoutCheckout(t *testing.T) {
 	if len(runner.inputs) != 0 {
 		t.Fatal("remember 不应进入审查")
 	}
-	if len(runner.remembers) != 1 || !strings.Contains(runner.remembers[0], "基线用 refs/review/base") {
+	if len(runner.remembers) != 1 || !strings.Contains(runner.remembers[0], "基线用 refs/worktree/review/base") {
 		t.Fatalf("未写入记忆: %#v", runner.remembers)
 	}
 	comment, err := os.ReadFile(commentPath)
@@ -448,4 +499,9 @@ func TestFixAuthorAllowedHelper(t *testing.T) {
 	if fixAuthorAllowed([]string{"ada"}, "bob") {
 		t.Fatal("未授权应拒绝")
 	}
+}
+
+func (r *recordingRunner) PrepareMemory(_ context.Context, input agent.ReviewInput) projectmem.ContextBundle {
+	r.memoryInputs = append(r.memoryInputs, input)
+	return r.memoryResult
 }

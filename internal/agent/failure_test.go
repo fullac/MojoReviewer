@@ -14,7 +14,7 @@ func TestInterruptedReviewKeepsNotesAndCoverage(t *testing.T) {
 	reads := &readProgress{}
 	_, _ = reads.read(readKey{kind: "pr_file_diff", path: "a.go"}, func() (string, error) { return "patch", nil })
 	var notes review.Notes
-	if err := notes.Add("严重", "a.go", 7, "错误分支缺少返回"); err != nil {
+	if err := notes.Add("严重", "a.go", 7, "- **问题描述：** 错误分支缺少返回。\n\n- **代码位置：** `a.go:7`\n\n- **修复建议：** 返回错误。"); err != nil {
 		t.Fatal(err)
 	}
 	cause := fmt.Errorf("前台任务未完成，已保留恢复记录。tq-7 [blocked] private-test-value\n原因: repeated tool calls produced no new evidence")
@@ -23,7 +23,7 @@ func TestInterruptedReviewKeepsNotesAndCoverage(t *testing.T) {
 	if !errors.As(err, &failure) || failure.TaskID != "tq-7" || !errors.Is(err, cause) {
 		t.Fatalf("未保留可识别的中断信息: %v", err)
 	}
-	if !result.Noted || result.SessionID != "session-1" || !strings.Contains(result.Text, "错误分支缺少返回") || strings.Contains(result.Text, "自由文本") {
+	if !result.Noted || result.SessionID != "session-1" || !strings.Contains(result.Text, "- **问题描述：** 错误分支缺少返回。\n\n- **代码位置：** `a.go:7`\n\n- **修复建议：** 返回错误。") || strings.Contains(result.Text, "自由文本") {
 		t.Fatalf("丢弃了中断前的笔记: %+v", result)
 	}
 	if !strings.Contains(failure.Reason, "重复读取") || !strings.Contains(failure.Coverage, `"a.go"`) || strings.Contains(err.Error(), "private-test-value") {
@@ -37,6 +37,21 @@ func TestInterruptedReviewWithoutNotesDoesNotClaimSuccess(t *testing.T) {
 		if err == nil || result.Noted || result.Text != "" || strings.Contains(err.Error(), "private-test-value") {
 			t.Fatalf("失败不能变成结论或泄露原始错误: %+v %v", result, err)
 		}
+	}
+}
+
+func TestOrdinaryLoopStopIsFailureWithoutExposingToolOutput(t *testing.T) {
+	text := "Detected repeated tool-call loop and stopped early to avoid timeout.\nLatest tool outputs:\n- read_repo_file: private-test-value"
+	result, err := reviewResult("session-loop", text, &review.Notes{}, &readProgress{}, nil)
+	var failure *ReviewFailure
+	if !errors.As(err, &failure) || !errors.Is(err, errRepeatedToolLoop) || result.Noted || result.Text != "" {
+		t.Fatalf("repeat guard became a completed review: %+v %v", result, err)
+	}
+	if strings.Contains(ModelFailureLog(err), "private-test-value") || strings.Contains(errors.Unwrap(err).Error(), "private-test-value") {
+		t.Fatal("runtime tool output escaped the host failure adapter")
+	}
+	if got := modelExecutionError(text, context.DeadlineExceeded); !errors.Is(got, context.DeadlineExceeded) {
+		t.Fatal("original SDK error was replaced by returned text")
 	}
 }
 
@@ -70,11 +85,32 @@ func TestSuccessfulReviewWithoutNotesUsesHostStructure(t *testing.T) {
 		t.Fatalf("unexpected result: %+v %v", result, err)
 	}
 	if !strings.HasPrefix(result.Text, review.BotPrefix) ||
-		!strings.Contains(result.Text, "严重\n无\n\n建议\n无") ||
+		strings.Contains(result.Text, "###") ||
 		!strings.Contains(result.Text, "未记录审查意见") {
 		t.Fatalf("zero-note review lost its fixed structure: %s", result.Text)
 	}
 	if strings.Contains(result.Text, untrusted) || strings.Contains(result.Text, "gho_") {
 		t.Fatal("zero-note review published model free text")
+	}
+}
+
+func TestEmptyOrdinaryLoopCannotCompleteReviewOrFix(t *testing.T) {
+	for _, text := range []string{"", " \n", "I couldn't produce a complete answer this round. Please retry."} {
+		result, err := reviewResult("session-empty", text, &review.Notes{}, &readProgress{}, nil)
+		if !errors.Is(err, errEmptyModelResponse) || result.Noted || result.Text != "" || !strings.Contains(ModelFailureLog(err), "模型空回复") {
+			t.Fatalf("empty loop became success: %+v %v", result, err)
+		}
+		if !errors.Is(modelExecutionError(text, nil), errEmptyModelResponse) {
+			t.Fatal("fix path accepted an empty loop")
+		}
+	}
+	for _, cause := range []error{context.Canceled, context.DeadlineExceeded} {
+		wrapped := fmt.Errorf("empty response private-test-value: %w", cause)
+		if strings.Contains(classifyReviewFailure(wrapped), "空回复") || !errors.Is(modelExecutionError("", wrapped), cause) {
+			t.Fatal("context cause lost to empty response")
+		}
+	}
+	if got := classifyReviewFailure(errors.New("max iterations (30) reached")); !strings.Contains(got, "迭代上限") {
+		t.Fatal(got)
 	}
 }

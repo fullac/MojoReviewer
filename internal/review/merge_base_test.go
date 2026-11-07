@@ -42,7 +42,7 @@ func TestReviewDiffsExcludeChangesOnlyOnBase(t *testing.T) {
 	for _, reuseShallow := range []bool{false, true} {
 		name := "fresh"
 		if reuseShallow {
-			name = "existing shallow checkout"
+			name = "reused shared checkout"
 		}
 		t.Run(name, func(t *testing.T) {
 			dataDir := t.TempDir()
@@ -53,8 +53,8 @@ func TestReviewDiffsExcludeChangesOnlyOnBase(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				if got := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "--is-shallow-repository")); got != "true" {
-					t.Fatalf("fixture should be shallow, got %s", got)
+				if got := strings.TrimSpace(run(t, ws.Dir, "git", "rev-parse", "--is-shallow-repository")); got != "false" {
+					t.Fatalf("shared object cache should retain commit ancestry: %s", got)
 				}
 			}
 			ws, err := PrepareWithBase(dataDir, "acme/web", cloneURL, head, "review", "trunk", base)
