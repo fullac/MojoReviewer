@@ -34,6 +34,9 @@ type ReviewFailure struct {
 // ModelFailureLog 返回可写入宿主日志的归类原因。
 // 原始 SDK 错误可能含 prompt，不能进入日志字段。
 func ModelFailureLog(err error) string {
+	if reason := upstreamReason(err); reason != "" {
+		return reason
+	}
 	var failure *ReviewFailure
 	if errors.As(err, &failure) {
 		if failure.TaskID != "" {
@@ -55,7 +58,7 @@ func (f *ReviewFailure) Unwrap() error { return f.cause }
 
 func reviewResult(sessionID, text string, notes *review.Notes, progress *readProgress, err error) (ReviewResult, error) {
 	err = modelExecutionError(text, err)
-	result := ReviewResult{SessionID: sessionID}
+	result := ReviewResult{SessionID: sessionID, Notes: notes.Snapshot()}
 	if notes.Len() > 0 {
 		result.Text = notes.Render()
 		result.Noted = true
@@ -67,7 +70,9 @@ func reviewResult(sessionID, text string, notes *review.Notes, progress *readPro
 		return result, nil
 	}
 	reason := "模型执行失败，审查未完成。"
-	if strings.Contains(err.Error(), "repeated tool calls produced no new evidence") {
+	if upstream := upstreamReason(err); upstream != "" {
+		reason = upstream
+	} else if strings.Contains(err.Error(), "repeated tool calls produced no new evidence") {
 		reason = "重复读取未产生新证据，运行时已中断审查。"
 	} else if strings.HasPrefix(err.Error(), "max iterations (") {
 		reason = "模型执行达到迭代上限，审查未完成。"

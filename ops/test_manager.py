@@ -28,6 +28,14 @@ class ManagerTests(unittest.TestCase):
         atomic_json(self.root / ".MojoReviewer/config.json", self.cfg)
         self.m = Manager(self.root)
 
+    def test_metrics_survive_snapshot_and_restart(self):
+        metrics = {"stages_ms": {"checkout": 10, "model": 200}, "total_ms": 220,
+                   "iterations": 2, "usage": {"input_tokens": 10, "output_tokens": 2, "total_tokens": 12},
+                   "tool_count": 1, "tools": [{"name": "review_note", "duration_ms": 1, "result_bytes": 20}]}
+        atomic_json(self.root / "data/activity.json", [{"id": "attempt", "state": "failed", "metrics": metrics}])
+        self.assertEqual(self.m.snapshot()["activity"][0]["metrics"], metrics)
+        self.assertEqual(Manager(self.root).snapshot()["activity"][0]["metrics"], metrics)
+
     def test_credentials_never_returned_and_blank_preserves(self):
         self.m.log("private-model-value private-signature-value private-gh-value")
         public = self.m.public_config()

@@ -93,13 +93,13 @@ func (s ToolScope) StatPage(offset, limit int) (string, error) {
 	return header + strings.TrimSuffix(page.String(), "\n"), nil
 }
 
-// FileDiff 只返回一个文件相对 refs/review/merge-base 的 patch。
+// FileDiff 只返回一个文件相对 refs/worktree/review/merge-base 的 patch。
 func (s ToolScope) FileDiff(path string) (string, error) {
 	rel, err := s.clean(path)
 	if err != nil {
 		return "", err
 	}
-	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", rel)
+	out, err := gitOutput(s.Dir, "diff", "--patch", mergeBaseRef, "HEAD", "--", ":(literal)"+rel)
 	if err != nil {
 		return "", err
 	}
@@ -345,10 +345,14 @@ func (s ToolScope) clean(path string) (string, error) {
 }
 
 func changedLines(dir, rel string) ([][2]int, error) {
-	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", rel)
+	out, err := gitOutput(dir, "diff", "-U0", mergeBaseRef, "HEAD", "--", ":(literal)"+rel)
 	if err != nil {
 		return nil, err
 	}
+	return parseChangedLines(out), nil
+}
+
+func parseChangedLines(out string) [][2]int {
 	var hunks [][2]int
 	for _, line := range strings.Split(out, "\n") {
 		if !strings.HasPrefix(line, "@@") {
@@ -379,7 +383,7 @@ func changedLines(dir, rel string) ([][2]int, error) {
 		}
 		hunks = append(hunks, [2]int{start, start + count - 1})
 	}
-	return hunks, nil
+	return hunks
 }
 
 func symbolsIn(abs, rel string, hunks [][2]int) []string {

@@ -8,11 +8,13 @@ import (
 
 // Note 是模型记下来的一条审查意见。服务端最后拼成评论，不让模型自由发挥整段正文。
 type Note struct {
-	Severity string
-	Title    string
-	Path     string
-	Line     int
-	Body     string
+	FindingID string `json:"finding_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+	Severity  string
+	Title     string
+	Path      string
+	Line      int
+	Body      string
 }
 
 // Notes 是一次审查里累积的意见。并发调用时加锁。
@@ -28,6 +30,20 @@ func (n *Notes) Add(severity, path string, line int, body string) error {
 
 // AddWithTitle 记录带简短标题的意见；旧调用可以省略标题。
 func (n *Notes) AddWithTitle(severity, path string, line int, title, body string) error {
+	return n.AddFinding(Note{Severity: severity, Path: path, Line: line, Title: title, Body: body})
+}
+
+func (n *Notes) AddFinding(note Note) error {
+	severity, path, line, title, body := note.Severity, note.Path, note.Line, note.Title, note.Body
+	switch note.Status {
+	case "", "new", "persistent", "resolved":
+	default:
+		return fmt.Errorf("status 只能是 new、persistent 或 resolved")
+	}
+	if note.Status == "resolved" && note.FindingID == "" {
+		return fmt.Errorf("已解决意见必须提供历史 finding_id")
+	}
+
 	title = strings.TrimSpace(title)
 	if strings.ContainsAny(title, "\r\n") {
 		return fmt.Errorf("title 必须是单行短句")
@@ -51,6 +67,7 @@ func (n *Notes) AddWithTitle(severity, path string, line int, title, body string
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.items = append(n.items, Note{
+		FindingID: note.FindingID, Status: note.Status,
 		Severity: severity,
 		Title:    title,
 		Path:     strings.TrimSpace(path),
@@ -138,4 +155,14 @@ func escapeNoteTitle(title string) string {
 		b.WriteRune(r)
 	}
 	return b.String()
+}
+
+// Snapshot 返回结构化笔记副本，供宿主评测和后续校验使用。
+func (n *Notes) Snapshot() []Note {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	return append([]Note{}, n.items...)
 }

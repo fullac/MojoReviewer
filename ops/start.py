@@ -12,6 +12,7 @@ import re
 import secrets
 import signal
 import socket
+import ssl
 import subprocess
 import threading
 import time
@@ -154,6 +155,16 @@ class Manager:
         handlers = [NoRedirect()]
         if base.startswith("http://127.0.0.1:"):
             handlers.append(urllib.request.ProxyHandler({}))
+        elif base.startswith("https://"):
+            # python.org CPython has no CA bundle until Install Certificates.command
+            # runs. macOS trust lives in /etc/ssl/cert.pem; prefer that, then env.
+            cafile = next((path for path in (
+                "/etc/ssl/cert.pem",
+                os.environ.get("SSL_CERT_FILE") or "",
+            ) if path and os.path.isfile(path)), None)
+            if cafile:
+                handlers.append(urllib.request.HTTPSHandler(
+                    context=ssl.create_default_context(cafile=cafile)))
         with urllib.request.build_opener(*handlers).open(req, timeout=10) as response:
             return response.status, response.read().decode()
 

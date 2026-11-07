@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"github.com/mojoreviewer/mojoreviewer/internal/review"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -18,6 +19,7 @@ type readProgress struct {
 	mu         sync.Mutex
 	seen       map[readKey]bool
 	duplicates int
+	ranges     []review.ReadRange
 }
 
 func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, error) {
@@ -36,6 +38,12 @@ func (p *readProgress) read(key readKey, fetch func() (string, error)) (string, 
 			p.seen = make(map[readKey]bool)
 		}
 		p.seen[key] = true
+		if key.kind == "pr_file_diff" {
+			p.ranges = append(p.ranges, review.ReturnedPatchRanges(key.path, out)...)
+		}
+		if key.kind == "read_repo_file" {
+			p.ranges = append(p.ranges, review.ReturnedRanges(key.path, out)...)
+		}
 	}
 	return out, err
 }
@@ -85,4 +93,10 @@ func readPath(root, path string) string {
 		return path
 	}
 	return filepath.ToSlash(rel)
+}
+
+func (p *readProgress) evidence() []review.ReadRange {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]review.ReadRange(nil), p.ranges...)
 }
