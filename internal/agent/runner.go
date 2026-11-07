@@ -101,6 +101,9 @@ type ReviewInput struct {
 	Manifest  *review.Manifest
 	Batch     *review.Batch
 	Previous  *review.History
+	// AttemptID names the progress file for this try. Empty skips progress writes.
+	AttemptID string
+	DataDir   string
 }
 
 // ReviewResult 是模型结论和可复用的会话 ID。
@@ -144,12 +147,14 @@ func (r *Runner) reviewOne(ctx context.Context, input ReviewInput) (ReviewResult
 	}
 	notes := &review.Notes{}
 	reads := &readProgress{}
-	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads); err != nil {
+	trace := &progressTrace{dir: input.DataDir, id: input.AttemptID}
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, reads, trace); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	if err := lockToolsToReviewOnly(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
+	trace.modelRequest()
 	text, err := r.runModel(ctx, sessionID, prompt(input))
 	groundDone := observe.Stage(ctx, "ground")
 	// Model timeout must not prevent checking already collected notes.
@@ -238,12 +243,14 @@ func (r *Runner) Fix(ctx context.Context, input ReviewInput) (ReviewResult, erro
 	}
 	notes := &review.Notes{}
 	// fix 工具可写文件，不能复用只读审查的读取去重记录。
-	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, nil); err != nil {
+	trace := &progressTrace{dir: input.DataDir, id: input.AttemptID}
+	if err := registerReviewTools(r.agent, review.ToolScope{Dir: input.WorkDir}, notes, nil, trace); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
 	if err := lockToolsToFixMode(r.agent); err != nil {
 		return ReviewResult{SessionID: sessionID}, err
 	}
+	trace.modelRequest()
 	text, err := r.runModel(ctx, sessionID, fixPrompt(input))
 	if err != nil {
 		return ReviewResult{SessionID: sessionID}, err

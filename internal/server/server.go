@@ -252,6 +252,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	slog.Info("开始审查", "pr", item.SessionKey)
+	s.progress(id, store.ProgressEvent{Kind: "start", Summary: "审查开始"})
 	if err := github.ReactStarted(ctx, item, s.cfg.GitHub.Host); err != nil {
 		slog.Warn("添加开始表情失败，继续处理任务", "pr", item.SessionKey, "error", err)
 	}
@@ -260,6 +261,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "metadata"
 		resolved, err := github.ResolveComment(ctx, item, s.cfg.GitHub.Host)
 		if err != nil {
+			s.failProgress(id, "补齐 PR 信息失败", err)
 			s.postFailure(ctx, item, "补齐 PR 信息失败", err)
 			return
 		}
@@ -297,9 +299,11 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 	ws, err := review.PrepareWithBaseContext(ctx, s.cfg.DataDir, item.Repo, item.CloneURL, item.HeadSHA, item.SessionKey, item.BaseBranch, item.BaseSHA)
 	checkoutDone()
 	if err != nil {
+		s.failProgress(id, "准备仓库失败", err)
 		s.postFailure(ctx, item, "准备仓库失败", err)
 		return
 	}
+	s.progress(id, store.ProgressEvent{Kind: "checkout", Summary: "检出完成"})
 	manifestDone := observe.Stage(ctx, "manifest")
 	manifest, manifestErr := review.BuildManifest(ctx, ws.Dir)
 	manifestDone()
@@ -313,6 +317,8 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		WorkDir:   ws.Dir,
 		SessionID: sessionForHead(existing, item.HeadSHA),
 		Manifest:  manifest,
+		AttemptID: id,
+		DataDir:   s.cfg.DataDir,
 	}
 	input.Previous = review.PreviousReview(ctx, ws.Dir, existing.ReviewedSHA, existing.Findings)
 	activity.Stage = "memory"
@@ -328,6 +334,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		}
 	}
 	if err != nil {
+		s.progress(id, store.ProgressEvent{Kind: "fail", Summary: "model：" + modelProgress(err)})
 		slog.Warn("审查未完成，准备发布失败说明", "pr", item.SessionKey, "reason", agent.ModelFailureLog(err))
 		commentURL, postErr := s.postObserved(ctx, item, reviewFailureComment(result, err))
 		if postErr != nil {
@@ -365,6 +372,7 @@ func (s *Server) runOne(ctx context.Context, item github.Review) {
 		activity.Stage = "published"
 	}
 	activity.CommentURL = commentURL
+	s.progress(id, store.ProgressEvent{Kind: "publish", Summary: "已发布"})
 	slog.Info("审查结果已发布", "pr", item.SessionKey, "session_saved", !storageFailed)
 }
 
