@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,8 +43,11 @@ func Ground(ctx context.Context, dir string, notes []Note, reads []ReadRange, pr
 		}
 	}
 	rejected := 0
+	scope := ToolScope{Dir: dir}
+	evidence := &groundEvidence{}
+	corpus := evidence.readCorpus(ctx, scope, reads)
 	for _, n := range notes {
-		if !groundNote(ctx, ToolScope{Dir: dir}, changed, n, reads, previous) {
+		if !groundNote(ctx, scope, changed, n, reads, evidence, corpus, previous) {
 			rejected++
 			continue
 		}
@@ -54,7 +58,155 @@ func Ground(ctx context.Context, dir string, notes []Note, reads []ReadRange, pr
 	return out, rejected, nil
 }
 
-func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n Note, reads []ReadRange, previous []Finding) bool {
+const (
+	groundReadSideLimit  = 32
+	groundReadByteLimit  = 1 << 20
+	groundBlobCacheLimit = 8 << 20
+)
+
+// groundEvidence 在一次 Ground 内复用已取出的文件。
+// 定位文件保留全文；已读范围按文件侧合并后只保留对应行，不能放宽成整文件。
+type groundEvidence struct {
+	blobs   map[string]string
+	blobErr map[string]error
+	bytes   int
+}
+
+func (e *groundEvidence) blob(ctx context.Context, scope ToolScope, ref, path string) (string, error) {
+	key := ref + "\x00" + path
+	if e.blobs != nil {
+		if err, ok := e.blobErr[key]; ok {
+			return "", err
+		}
+		if text, ok := e.blobs[key]; ok {
+			return text, nil
+		}
+	}
+	text, err := manifestGit(ctx, scope.Dir, 4<<20, "show", ref+":"+path)
+	if e.blobs == nil {
+		e.blobs = map[string]string{}
+		e.blobErr = map[string]error{}
+	}
+	if err != nil {
+		e.blobErr[key] = err
+		return "", err
+	}
+	// 缓存满后仍允许原有定位文件检查，不能让额外读取挤掉合法笔记。
+	if e.bytes+len(text) <= groundBlobCacheLimit {
+		e.blobs[key] = text
+		e.bytes += len(text)
+	}
+	return text, nil
+}
+
+// mergeReadRanges 把同一文件同一侧重叠或相邻的行段收成一段。
+// 不相邻的行段保持分开，避免中间未读行进入依据。
+func mergeReadRanges(reads []ReadRange) []ReadRange {
+	type side struct {
+		path string
+		old  bool
+	}
+	grouped := map[side][]ReadRange{}
+	order := make([]side, 0)
+	for _, r := range reads {
+		if r.Start < 1 || r.End < r.Start || r.Path == "" {
+			continue
+		}
+		key := side{r.Path, r.Old}
+		if _, ok := grouped[key]; !ok {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], r)
+	}
+	out := make([]ReadRange, 0, len(reads))
+	for _, key := range order {
+		spans := grouped[key]
+		sort.Slice(spans, func(i, j int) bool { return spans[i].Start < spans[j].Start })
+		cur := spans[0]
+		for _, next := range spans[1:] {
+			if next.Start <= cur.End+1 {
+				if next.End > cur.End {
+					cur.End = next.End
+				}
+				continue
+			}
+			out = append(out, cur)
+			cur = next
+		}
+		out = append(out, cur)
+	}
+	return out
+}
+
+// readCorpus 只收集安全路径上实际读过的行。
+// 32 的上限按不同文件侧计算；同一侧的多条 patch 行只占用一次。
+func (e *groundEvidence) readCorpus(ctx context.Context, scope ToolScope, reads []ReadRange) string {
+	var b strings.Builder
+	sides := 0
+	seen := map[string]bool{}
+	for _, r := range mergeReadRanges(reads) {
+		side := "new\x00" + r.Path
+		if r.Old {
+			side = "old\x00" + r.Path
+		}
+		if !seen[side] {
+			if sides >= groundReadSideLimit {
+				continue
+			}
+			seen[side] = true
+			sides++
+		}
+		rel, err := scope.clean(r.Path)
+		if err != nil || filepath.ToSlash(rel) != r.Path {
+			continue
+		}
+		info, err := os.Lstat(filepath.Join(scope.Dir, rel))
+		if r.Old {
+			if err != nil && !os.IsNotExist(err) {
+				continue
+			}
+			if err == nil && !info.Mode().IsRegular() {
+				continue
+			}
+		} else if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		ref := "HEAD"
+		if r.Old {
+			ref = mergeBaseRef
+		}
+		text, err := e.blob(ctx, scope, ref, r.Path)
+		if err != nil {
+			continue
+		}
+		lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
+		if r.Start > len(lines) {
+			continue
+		}
+		end := r.End
+		if end > len(lines) {
+			end = len(lines)
+		}
+		// 体积预算针对实际已读片段，不针对可能很大的未读文件正文。
+		size := 0
+		for i := r.Start; i <= end; i++ {
+			size += len(lines[i-1]) + 1
+			if size > groundReadByteLimit-b.Len() {
+				break
+			}
+		}
+		if size > groundReadByteLimit-b.Len() {
+			continue
+		}
+		for i := r.Start; i <= end; i++ {
+			b.WriteString(lines[i-1])
+			b.WriteByte('\n')
+		}
+	}
+	return b.String()
+}
+
+func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n Note, reads []ReadRange, evidence *groundEvidence, corpus string, previous []Finding) bool {
 	known := false
 	previousSHA := ""
 	for _, f := range previous {
@@ -93,7 +245,7 @@ func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n
 	} else if err != nil || !info.Mode().IsRegular() {
 		return false
 	}
-	source, err := manifestGit(ctx, scope.Dir, 4<<20, "show", ref+":"+n.Path)
+	source, err := evidence.blob(ctx, scope, ref, n.Path)
 	if err != nil || n.Line > len(strings.Split(strings.TrimSuffix(source, "\n"), "\n")) {
 		return false
 	}
@@ -129,17 +281,19 @@ func groundNote(ctx context.Context, scope ToolScope, changed map[string]bool, n
 	}
 	if n.Status == "resolved" && commitID.MatchString(previousSHA) {
 		// A resolved finding may name an identifier that was removed by the fix.
-		if old, err := manifestGit(ctx, scope.Dir, 4<<20, "show", previousSHA+":"+n.Path); err == nil {
+		if old, err := evidence.blob(ctx, scope, previousSHA, n.Path); err == nil {
 			source += "\n" + old
 		}
 	}
+	// 定位文件用全文，其他文件只用调用前一次拼好的已读行。
+	noteCorpus := source + "\n" + corpus
 	// Only claims about existing code are checked. Proposed names in the fix
 	// item are allowed to be new. This is a syntactic check, not a semantic judge.
 	for _, m := range inlineCode.FindAllStringSubmatch(sections[0], -1) {
 		term := strings.TrimSuffix(m[1], "()")
 		if identifier.MatchString(m[1]) {
 			re := regexp.MustCompile(`\b` + regexp.QuoteMeta(term) + `\b`)
-			if !re.MatchString(source) {
+			if !re.MatchString(noteCorpus) {
 				return false
 			}
 		}
